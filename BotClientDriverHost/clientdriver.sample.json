@@ -1,0 +1,39 @@
+{
+  "ProcessName": "MirClient",
+  "WindowTitleKeyword": "",
+  "EnsureForeground": true,
+
+  "ServerIp": "",
+  "LoginGatePort": 0,
+  "SelGatePort": 0,
+  "RunGatePort": 0,
+
+  "CaptureDevice": "",
+  "ReadOnlySniff": true,
+  "MapDirHint": "",
+
+  "View": {
+    "ViewLeft": 0,
+    "ViewTop": 0,
+    "ViewWidth": 0,
+    "ViewHeight": 0,
+    "PlayerScreenX": 0,
+    "PlayerScreenY": 0,
+    "CellWidth": 48,
+    "CellHeight": 32,
+    "PlayerAlwaysCentered": true
+  },
+
+  "Behavior": {
+    "ClickJitterPx": 3,
+    "MinClickIntervalMs": 180,
+    "MaxClickIntervalMs": 420,
+    "ClickHoldMinMs": 60,
+    "ClickHoldMaxMs": 130,
+    "ActionAckTimeoutMs": 1200,
+    "MaxUnackedActions": 5,
+    "MiniMapPathMinDistance": 14,
+    "PathStuckTimeoutMs": 4000,
+    "MapLoadGuardMs": 1500
+  }
+}

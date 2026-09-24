@@ -1,0 +1,68 @@
+name: build-win-x64
+
+# C 方案（客户端驱动挂机）宿主工程的云端打包验证
+# 产出：BotClientDriverHost.exe（win-x64 self-contained singlefile，requireAdministrator manifest）
+
+on:
+  push:
+    branches: [ main, master ]
+  workflow_dispatch:
+
+env:
+  DOTNET_NOLOGO: true
+  DOTNET_CLI_TELEMETRY_OPTOUT: true
+  DOTNET_SKIP_FIRST_TIME_EXPERIENCE: true
+
+jobs:
+  build:
+    runs-on: windows-latest
+    timeout-minutes: 20
+
+    steps:
+      - name: 拉取源码
+        uses: actions/checkout@v4
+
+      - name: 安装 .NET 8 SDK
+        uses: actions/setup-dotnet@v4
+        with:
+          dotnet-version: '8.0.x'
+
+      - name: 还原依赖
+        run: dotnet restore BotClientDriverHost/BotClientDriverHost.csproj
+
+      - name: 编译（Release 验证）
+        run: dotnet build BotClientDriverHost/BotClientDriverHost.csproj -c Release -r win-x64 --no-restore -v minimal
+
+      - name: 发布 win-x64 单文件
+        run: >
+          dotnet publish BotClientDriverHost/BotClientDriverHost.csproj
+          -c Release -r win-x64 --self-contained true --no-restore
+          -p:PublishSingleFile=true
+          -p:IncludeNativeLibrariesForSelfExtract=true
+          -p:EnableCompressionInSingleFile=true
+          -p:DebugType=none
+          -o publish
+
+      - name: 产物清单
+        shell: pwsh
+        run: |
+          Get-ChildItem -Recurse publish | Select-Object FullName, Length | Format-Table -AutoSize
+          $exe = Get-ChildItem publish -Filter *.exe | Select-Object -First 1
+          if ($null -eq $exe) { throw "未生成 exe" }
+          "EXE_SIZE_BYTES=$($exe.Length)" | Out-File -Append $env:GITHUB_ENV
+          "EXE_NAME=$($exe.Name)" | Out-File -Append $env:GITHUB_ENV
+
+      - name: 上传产物
+        uses: actions/upload-artifact@v4
+        with:
+          name: BotClientDriverHost-win-x64
+          path: publish/**
+          if-no-files-found: error
+
+      - name: 结果摘要
+        shell: pwsh
+        run: |
+          "### 打包结果" >> $env:GITHUB_STEP_SUMMARY
+          "- 产物：``$env:EXE_NAME``" >> $env:GITHUB_STEP_SUMMARY
+          "- 体积：$([math]::Round([int]$env:EXE_SIZE_BYTES / 1MB, 2)) MB" >> $env:GITHUB_STEP_SUMMARY
+          "- 运行前提：管理员权限 + 已安装 Npcap（嗅探用）" >> $env:GITHUB_STEP_SUMMARY

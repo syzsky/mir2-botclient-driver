@@ -1,0 +1,47 @@
+<Project Sdk="Microsoft.NET.Sdk">
+
+  <!--
+    C 方案（客户端驱动挂机）无界面宿主工程
+    - 复用 BotClient.Core（协议/登录/运行时/AI）+ BotClient.ClientDriver（嗅探/回注/进图）
+    - 目标 net8.0-windows（ClientDriver 依赖 WinDivert 为 Windows 专用）
+    - 发布形态：win-x64 self-contained + singlefile + requireAdministrator（嗅探需管理员 + Npcap）
+    - 注意：禁止 PublishTrimmed —— WinDivert/反射/JSON 序列化会被裁掉
+  -->
+  <PropertyGroup>
+    <OutputType>Exe</OutputType>
+    <TargetFramework>net8.0-windows</TargetFramework>
+    <Nullable>enable</Nullable>
+    <ImplicitUsings>enable</ImplicitUsings>
+    <LangVersion>latest</LangVersion>
+    <AssemblyName>BotClientDriverHost</AssemblyName>
+    <RootNamespace>BotClientDriverHost</RootNamespace>
+
+    <!-- 发布形态（Linux 交叉编译时同样生效，由 dotnet publish -r win-x64 触发） -->
+    <RuntimeIdentifier>win-x64</RuntimeIdentifier>
+    <SelfContained>true</SelfContained>
+    <PublishSingleFile>true</PublishSingleFile>
+    <IncludeNativeLibrariesForSelfExtract>true</IncludeNativeLibrariesForSelfExtract>
+    <EnableCompressionInSingleFile>true</EnableCompressionInSingleFile>
+    <DebugType>none</DebugType>
+    <InvariantGlobalization>false</InvariantGlobalization>
+    <SatelliteResourceLanguages>zh-Hans;en</SatelliteResourceLanguages>
+    <ApplicationManifest>app.manifest</ApplicationManifest>
+    <EnableWindowsTargeting>true</EnableWindowsTargeting>
+    <NoWarn>$(NoWarn);CA1416;NETSDK1206</NoWarn>
+  </PropertyGroup>
+
+  <ItemGroup>
+    <ProjectReference Include="..\BotClient.Core\BotClient.Core.csproj" />
+    <ProjectReference Include="..\BotClient.ClientDriver\BotClient.ClientDriver.csproj" />
+  </ItemGroup>
+
+  <ItemGroup>
+    <None Update="botsettings.sample.json">
+      <CopyToOutputDirectory>PreserveNewest</CopyToOutputDirectory>
+    </None>
+    <None Update="clientdriver.sample.json">
+      <CopyToOutputDirectory>PreserveNewest</CopyToOutputDirectory>
+    </None>
+  </ItemGroup>
+
+</Project>

@@ -1,0 +1,34 @@
+<Project Sdk="Microsoft.NET.Sdk">
+
+  <!--
+    BotClient.ClientDriver —— C 方案（客户端驱动式挂机）实现库
+    目标框架与 BotClient.Core 保持一致（net8.0-windows），因为它要调用 Win32 输入 API。
+
+    接入方式：由 BotClientWpf 引用本工程；也可单独做成一个控制台宿主。
+    本工程不包含网络收发逻辑 —— 所有上行包都由真机客户端自己发出，这里只做：
+      ① 只读嗅探（SharpPcap）读取客户端 ↔ 服务端的真实字节流；
+      ② 把解析出的服务端包注入 BotRuntime（状态镜像）；
+      ③ 把 BotRuntime 想发的动作翻译成鼠标/键盘操作（操作通道）。
+  -->
+  <PropertyGroup>
+    <TargetFramework>net8.0-windows</TargetFramework>
+    <Nullable>enable</Nullable>
+    <ImplicitUsings>enable</ImplicitUsings>
+    <LangVersion>latest</LangVersion>
+    <AllowUnsafeBlocks>true</AllowUnsafeBlocks>
+    <Platforms>AnyCPU;x64</Platforms>
+    <RootNamespace>BotClient.ClientDriver</RootNamespace>
+    <AssemblyName>BotClient.ClientDriver</AssemblyName>
+  </PropertyGroup>
+
+  <ItemGroup>
+    <ProjectReference Include="..\BotClient.Core\BotClient.Core.csproj" />
+  </ItemGroup>
+
+  <ItemGroup>
+    <!-- 抓包：Npcap 的托管封装（需在目标机安装 Npcap，勾选 WinPcap 兼容模式） -->
+    <PackageReference Include="SharpPcap" Version="6.2.5" />
+    <PackageReference Include="PacketDotNet" Version="1.4.7" />
+  </ItemGroup>
+
+</Project>

@@ -1,0 +1,26 @@
+{
+  "Host": "127.0.0.1",
+  "Port": 7000,
+  "Account": "",
+
+  "ServerName": "",
+  "CharacterName": "",
+
+  "WalkIntervalMs": 650,
+  "AttackIntervalMs": 950,
+  "PotionIntervalMs": 1050,
+  "PickupIntervalMs": 500,
+  "FightRange": 12,
+  "HpPotionPercent": 60,
+  "MpPotionPercent": 40,
+  "EscapeHpPercent": 20,
+  "AutoPickup": true,
+
+  "VerbosePacketLog": false,
+  "LanHost": "192.168.1.5",
+  "AutoReloginOnDeath": false,
+  "AutoReloginMaxAttempts": 3,
+  "AutoReloginIntervalSec": 60,
+  "MapDir": "",
+  "CharDataDir": ""
+}
