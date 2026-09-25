@@ -402,6 +402,7 @@ public sealed class HostRunner
 
         try
         {
+            host.DumpClientCandidates();
             bool hit = host.AutoConfigure(overwrite: true);
             Emit(hit ? "[ui] 客户端识别完成，结果已更新" : "[ui] 未识别到客户端进程（确认客户端已启动）");
             Driver.Save(_driverPath);
@@ -413,6 +414,115 @@ public sealed class HostRunner
         }
 
         StatusChanged?.Invoke();
+    }
+
+    // ------------------------------------------------------------------ 扫描并选择客户端（跨引擎）
+
+    /// <summary>
+    /// 扫描本机**所有**候选传奇客户端进程及其到服务端的连接，逐条列出（不只看评分最高的一个）。
+    /// 纯只读：不动配置、不碰网络。引擎无关 —— 只要是持有外部 TCP 连接的客户端进程都会进候选，
+    /// 包含黑名单过滤（浏览器/聊天工具等）与评分排序。
+    /// </summary>
+    public List<ClientCandidate> ScanClients(int max = 12)
+    {
+        try
+        {
+            List<ClientCandidate> cands = ClientDiscovery.Discover(Driver, max);
+            Emit($"[扫描] 候选客户端 {cands.Count} 条" +
+                 (Driver.TargetPid > 0 ? $"（当前已锁定 pid={Driver.TargetPid}）" : "（当前为自动挑选）"));
+            return cands;
+        }
+        catch (Exception ex)
+        {
+            Emit("[错误] 扫描客户端失败: " + ex.Message);
+            return new List<ClientCandidate>();
+        }
+    }
+
+    /// <summary>
+    /// 应用列表中选中的那条候选：钉住 PID + 进程名 + 服务端地址，写回 clientdriver.json。
+    /// 运行中的话立即用新目标重新识别一次。
+    /// </summary>
+    public void ApplyCandidate(ClientCandidate cand)
+    {
+        Driver.ProcessName = cand.ProcessName;
+        Driver.TargetPid = cand.Pid;
+        if (!string.IsNullOrWhiteSpace(cand.ServerIp)) Driver.ServerIp = cand.ServerIp;
+
+        Emit($"[选择] 目标客户端：{cand.ProcessName}(pid={cand.Pid}) → {cand.ServerIp}:{cand.ServerPort}" +
+             (cand.HasWindow ? $"｜窗口=\"{cand.WindowTitle}\"" : "｜（无可见窗口）"));
+
+        try
+        {
+            Driver.Save(_driverPath);
+            Emit($"[选择] 已写回 {_driverPath}（TargetPid={Driver.TargetPid}，进程重启后 PID 变化会自动退回按名称匹配）");
+        }
+        catch (Exception ex)
+        {
+            Emit("[错误] 写回 clientdriver.json 失败: " + ex.Message);
+        }
+
+        if (Host != null) ReDiscover();
+        StatusChanged?.Invoke();
+    }
+
+    /// <summary>清除锁定，退回"自动挑评分最高的候选"。</summary>
+    public void ClearCandidatePin()
+    {
+        Driver.TargetPid = 0;
+        try
+        {
+            Driver.Save(_driverPath);
+            Emit("[选择] 已取消 PID 锁定，恢复自动识别");
+        }
+        catch (Exception ex)
+        {
+            Emit("[错误] 写回 clientdriver.json 失败: " + ex.Message);
+        }
+        StatusChanged?.Invoke();
+    }
+
+    /// <summary>
+    /// 自动探测帧定界档（换引擎/换服时用）：只读采样 N 秒，跑 SplitterAutoDetector，
+    /// 有把握才写回 Framing，并把置信度理由打进日志。全程零点击、不介入连接。
+    /// </summary>
+    public async Task<int> AutoFrameAsync(int seconds = 15)
+    {
+        ClientDriverHost? host = Host;
+        if (host == null)
+        {
+            Emit("[定界] 尚未启动：先在客户端里登录进游戏，再点“开始挂机”，然后才能采样探测");
+            return -1;
+        }
+
+        try
+        {
+            Emit($"[定界] 开始只读采样 {seconds} 秒（零点击）。期间请在客户端里走两步、开个背包，让数据包出现…");
+            int rc = await host.AutoFrameAsync(seconds);
+            if (rc == 0)
+            {
+                try
+                {
+                    Driver.Save(_driverPath);
+                    Emit($"[定界] 探测结果已写回 {_driverPath}");
+                }
+                catch (Exception ex)
+                {
+                    Emit("[定界] 写回配置失败（本次运行仍生效）: " + ex.Message);
+                }
+                await Task.Run(() => ReDiscover());
+            }
+            else
+            {
+                Emit("[定界] 未探测出可信的定界参数，保持原样（可在设置里手工填魔术字/长度偏移）");
+            }
+            return rc;
+        }
+        catch (Exception ex)
+        {
+            Emit("[错误] 自动定界失败: " + ex.Message);
+            return -2;
+        }
     }
 
     /// <summary>抓包环境检测（缺失时按需补装 Npcap）。</summary>

@@ -293,6 +293,7 @@ public partial class MainWindow : Window
         StartBtn.IsEnabled = !_busy && !running;
         StopBtn.IsEnabled = !_busy && running;
         RediscoverBtn.IsEnabled = !_busy;
+        ScanClientsBtn.IsEnabled = !_busy;
         SelfCheckBtn.IsEnabled = !_busy;
         NpcapBtn.IsEnabled = !_busy;
     }
@@ -347,6 +348,31 @@ public partial class MainWindow : Window
     }
 
     private void OnSelfCheckClick(object sender, RoutedEventArgs e) => _runner.RunSelfCheck();
+
+    /// <summary>
+    /// 扫描客户端：一次列出本机所有候选客户端进程（各引擎通用；同名多开逐条列出各自连接），
+    /// 由人工选定要跟随的那一条，选定后钉住 PID。比"自动挑评分最高的"更适合多开/多引擎场景。
+    /// </summary>
+    private void OnScanClientsClick(object sender, RoutedEventArgs e)
+    {
+        if (_busy) return;
+
+        try
+        {
+            var picker = new ClientPickerWindow(_runner) { Owner = this };
+            if (picker.ShowDialog() == true && picker.Selected != null)
+            {
+                AppendLog($"[选择] 目标客户端：{picker.Selected.ProcessName}(pid={picker.Selected.Pid}) → " +
+                          $"{picker.Selected.ServerIp}:{picker.Selected.ServerPort}");
+                ApplyTitle();
+                RefreshStatusText();
+            }
+        }
+        catch (Exception ex)
+        {
+            AppendLog("[错误] 打开客户端选择器失败: " + ex.Message);
+        }
+    }
 
     private async void OnNpcapClick(object sender, RoutedEventArgs e)
     {

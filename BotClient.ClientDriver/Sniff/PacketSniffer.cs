@@ -1,4 +1,5 @@
 using System.Net;
+using System.Text;
 using BotClient.Net;
 using PacketDotNet;
 using SharpPcap;
@@ -55,6 +56,16 @@ public sealed class PacketSniffer : IDisposable
     private bool _portFilterActive;
     private bool _autoFollow;
     private int _discoverTick;
+    private string _lastConfigured = string.Empty;
+
+    // ---- 诊断采样（只读；只影响日志，不改变任何抓包/解析行为）----
+    private sealed class FlowStat { public long InPkts, InBytes, OutPkts, OutBytes; }
+    private readonly Dictionary<string, FlowStat> _flowStats = new();
+    private readonly HashSet<string> _hexDumped = new();
+    private Timer? _statsTimer;
+    private long _statsSeen, _statsHit;
+    private int _silentTicks, _candTicks;
+    private string _pidsLogged = string.Empty;
 
     public event Action<SniffFlow, FlowDirection, byte[]>? BytesArrived;
     public event Action<string>? Log;
@@ -118,6 +129,7 @@ public sealed class PacketSniffer : IDisposable
             _portFilterActive = true;
             _endpointTimer = new Timer(_ => RefreshEndpoints(), null, 0, 1000);
             Emit("[sniff] ServerIp 未配置 —— 自动跟随模式：请启动客户端登录，宿主会自行识别进程与服务端地址");
+            DumpCandidates("启动时");
         }
         else
         {
@@ -126,7 +138,8 @@ public sealed class PacketSniffer : IDisposable
         }
 
         _device.StartCapture();
-        Emit("[sniff] 已开始只读抓包（不介入连接，客户端无感）");
+        _statsTimer = new Timer(_ => DumpStats(), null, 5000, 5000);
+        Emit("[sniff] 已开始只读抓包（不介入连接，客户端无感）；每 5 秒输出一次包统计与首包十六进制，用于定位「抓不到 / 解不出」");
     }
 
     // ------------------------------------------------------------------ 自动跟随
@@ -140,11 +153,33 @@ public sealed class PacketSniffer : IDisposable
         if (_disposed || !_autoFollow) return;
         try
         {
+            // 配置里的进程名被改过（例如图形界面点了「重新识别客户端」）：
+            // 必须丢掉缓存重新认，否则还是会跟着旧进程抓，用户永远看不到变化。
+            string configured = (_cfg.ProcessName ?? string.Empty).Trim();
+            if (!string.Equals(configured, _lastConfigured, StringComparison.OrdinalIgnoreCase))
+            {
+                _lastConfigured = configured;
+                _clientPids.Clear();
+                lock (_clientLocalPorts) { _clientLocalPorts.Clear(); _notClientPorts.Clear(); }
+                if (configured.Length > 0) Emit($"[sniff] 进程配置变更为 \"{configured}\"，重新识别并跟随新进程");
+            }
+
             if (_clientPids.Count == 0 || !_clientPids.Any(IsProcessAlive))
             {
                 _clientPids.Clear();
                 _clientPids.AddRange(ClientDiscovery.FindPidsByProcessName(_cfg.ProcessName));
             }
+
+            string pidTag = configured + ":" + string.Join(",", _clientPids);
+            if (_clientPids.Count > 0 && pidTag != _pidsLogged)
+            {
+                _pidsLogged = pidTag;
+                Emit($"[sniff] 当前只监听进程 \"{configured}\"（pid={string.Join(",", _clientPids)}）的连接");
+            }
+
+            // 一直没有下行数据时，每 ~5 秒重新列一次候选：
+            // "抓的是不是真游戏客户端"最直接的证据。
+            if (++_candTicks % 5 == 0 && !HasDownstreamData()) DumpCandidates("已连续 5 秒没有任何下行数据");
 
             // 还没有 PID 时每 2 秒重试一次识别 —— 允许"先启动宿主、后启动客户端"的顺序，
             // 也允许进程名不是配置里那个默认值（此时靠自动发现挑最像客户端的进程）。
@@ -274,6 +309,115 @@ public sealed class PacketSniffer : IDisposable
         ServerEndpointLocked?.Invoke(ip, port);
     }
 
+    // ------------------------------------------------------------------ 诊断输出
+
+    private static string FlowKeyOf(SniffFlow flow)
+        => $"{flow.Client.Address}:{flow.Client.Port}-{flow.Server.Port}";
+
+    private void UpdateStat(SniffFlow flow, bool fromServer, int bytes)
+    {
+        lock (_gateLock)
+        {
+            string key = FlowKeyOf(flow);
+            if (!_flowStats.TryGetValue(key, out var st)) _flowStats[key] = st = new FlowStat();
+            if (fromServer) { st.InPkts++; st.InBytes += bytes; }
+            else { st.OutPkts++; st.OutBytes += bytes; }
+        }
+    }
+
+    private bool HasDownstreamData()
+    {
+        lock (_gateLock) return _flowStats.Values.Any(s => s.InBytes > 0);
+    }
+
+    /// <summary>每条流每个方向只打一次首包：明文 Mir 首包 vs TLS/HTTP 一眼可辨。</summary>
+    private void DumpFirstPayload(SniffFlow flow, bool fromServer, byte[] payload)
+    {
+        string tag = $"{FlowKeyOf(flow)} {(fromServer ? "下行" : "上行")}";
+        lock (_gateLock) { if (!_hexDumped.Add(tag)) return; }
+
+        int n = Math.Min(payload.Length, 48);
+        var hex = new StringBuilder();
+        for (int i = 0; i < n; i++)
+        {
+            hex.Append(payload[i].ToString("X2"));
+            hex.Append(i % 16 == 15 ? "  " : " ");
+        }
+        var ascii = new StringBuilder();
+        for (int i = 0; i < n; i++)
+        {
+            byte b = payload[i];
+            ascii.Append(b >= 0x20 && b < 0x7F ? (char)b : '.');
+        }
+
+        string guess = "（明文，可能是 Mir 流）";
+        if (n >= 2 && payload[0] == 0x16 && payload[1] == 0x03)
+            guess = "（疑似 TLS 加密：本工程的明文解析器读不了这条流）";
+        else if (n >= 3 && payload[0] == 0x47 && payload[1] == 0x45 && payload[2] == 0x54)
+            guess = "（HTTP 明文请求，不是游戏协议）";
+
+        Emit($"[sniff] {tag} 首包 {n}B {guess}{Environment.NewLine}" +
+             $"           hex: {hex.ToString().TrimEnd()}{Environment.NewLine}" +
+             $"           txt: {ascii}");
+    }
+
+    /// <summary>列出"谁持有外部连接、像不像游戏客户端"——识别错进程时的第一手证据。</summary>
+    private void DumpCandidates(string why)
+    {
+        try
+        {
+            var cands = ClientDiscovery.Discover(_cfg, 8);
+            if (cands.Count == 0)
+            {
+                Emit($"[sniff] 候选进程（{why}）：空 —— 当前没有任何进程持有对外 TCP 连接");
+                return;
+            }
+
+            var lines = cands.Select((c, i) => $"           {i + 1}. {c}");
+            Emit($"[sniff] 候选进程（{why}，按可能性排序）：{Environment.NewLine}{string.Join(Environment.NewLine, lines)}" +
+                 $"{Environment.NewLine}           若第 1 名不是游戏客户端，请在「设置」里手填进程名（clientdriver.json 的 ProcessName）");
+        }
+        catch (Exception ex)
+        {
+            Emit($"[sniff] 候选进程枚举失败: {ex.Message}");
+        }
+    }
+
+    /// <summary>5 秒一次的抓包心跳：包数/命中数/每条流量字节数，回答"到底抓到了没有"。</summary>
+    private void DumpStats()
+    {
+        if (_disposed) return;
+        try
+        {
+            long atSeen = PacketsSeen, atHit = PacketsMatched;
+            string flows;
+            lock (_gateLock)
+            {
+                flows = _flowStats.Count == 0
+                    ? "尚无匹配流"
+                    : string.Join("；", _flowStats.Select(kv =>
+                        $"{kv.Key} 下行 {kv.Value.InPkts}包/{kv.Value.InBytes}B，上行 {kv.Value.OutPkts}包/{kv.Value.OutBytes}B"));
+            }
+
+            if (atSeen == _statsSeen)
+            {
+                // 完全静默时前 1 分钟每条都报，之后每分钟一条，别把日志刷满
+                if (++_silentTicks > 12 && _silentTicks % 12 != 1) return;
+                Emit($"[sniff] 静默中：近 5 秒没抓到任何 TCP 包（累计 包={atSeen} 命中={atHit}；{flows}）" +
+                     "；若客户端确实在线，检查网卡选择 / 管理员权限 / Npcap");
+                return;
+            }
+
+            Emit($"[sniff] 5 秒统计：新增 包={atSeen - _statsSeen} 命中={atHit - _statsHit}；{flows}（累计 包={atSeen} 命中={atHit}）");
+            _statsSeen = atSeen;
+            _statsHit = atHit;
+        }
+        catch (Exception ex)
+        {
+            Emit($"[sniff] 统计输出异常: {ex.Message}");
+        }
+    }
+
     private static bool IsProcessAlive(int pid)
     {
         try
@@ -364,8 +508,14 @@ public sealed class PacketSniffer : IDisposable
             if (tcp.Finished || tcp.Reset) reassembler.OnFin();
 
             byte[] payload = tcp.PayloadData;
+
+            // 诊断：按流累计方向/包数/字节数，并留一份首包十六进制
+            UpdateStat(flow, fromServer, payload?.Length ?? 0);
             if (payload is { Length: > 0 })
+            {
+                DumpFirstPayload(flow, fromServer, payload);
                 reassembler.OnSegment(tcp.SequenceNumber, payload);   // 事件已在 GetOrCreateFlow 里挂好，切勿在此重复订阅
+            }
         }
         catch (Exception ex)
         {
@@ -407,6 +557,8 @@ public sealed class PacketSniffer : IDisposable
         _disposed = true;
         try { _endpointTimer?.Dispose(); } catch { }
         _endpointTimer = null;
+        try { _statsTimer?.Dispose(); } catch { }
+        _statsTimer = null;
         try
         {
             if (_device != null)

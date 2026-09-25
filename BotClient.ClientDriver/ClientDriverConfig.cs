@@ -21,6 +21,13 @@ public sealed class ClientDriverConfig
     /// <summary>窗口标题关键字；留空则只用进程名匹配（多开时用标题区分）。</summary>
     public string WindowTitleKeyword { get; set; } = "";
 
+    /// <summary>
+    /// 锁定的客户端 PID（0 = 不锁定）。由图形界面的「扫描客户端」列表选定后写入：
+    /// 同名多开（同一引擎开了好几个客户端）时，光靠进程名分不出该跟哪一个，这里直接钉住选中的那个。
+    /// PID 每次重启会变，属于"本次会话提示值"——进程退出后该值自动失效，识别会退回按进程名+评分挑选。
+    /// </summary>
+    public int TargetPid { get; set; }
+
     /// <summary>每次点击前把客户端窗口切到前台并校验；关掉它就只能靠人工保证窗口在最前，风险自负。</summary>
     public bool EnsureForeground { get; set; } = true;
 

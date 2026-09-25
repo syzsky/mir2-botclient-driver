@@ -68,6 +68,10 @@ public sealed class ClientDriverHost : IAsyncDisposable
     private readonly Dictionary<string, List<byte[]>> _samples = new(StringComparer.Ordinal);
     private int _sampleBytes;
     private volatile bool _sampling;
+
+    // 解码诊断：每条流累计"收到多少字节 / 解出多少帧"，用来区分「没抓到」与「抓到了但解不出」
+    private readonly Dictionary<string, (long Bytes, long Frames)> _decodeStats = new(StringComparer.Ordinal);
+    private DateTime _lastNoFrameWarnUtc = DateTime.MinValue;
     private ISessionAttachment? _attachment;
     private bool _disposed;
 
@@ -309,6 +313,10 @@ public sealed class ClientDriverHost : IAsyncDisposable
         if (string.IsNullOrWhiteSpace(Config.ServerIp) || string.IsNullOrWhiteSpace(Config.ProcessName))
             AutoConfigure();
 
+        Log?.Invoke($"[host] 抓包目标：进程={(string.IsNullOrWhiteSpace(Config.ProcessName) ? "(自动识别)" : Config.ProcessName)}，" +
+                    $"服务端={(string.IsNullOrWhiteSpace(Config.ServerIp) ? "(自动跟随真实连接)" : Config.ServerIp)}" +
+                    "；若长时间无数据，点「重新识别客户端」查看候选进程列表");
+
         Credentials.Log += m => Log?.Invoke(m);
 
         _sniffer = new PacketSniffer(Config);
@@ -358,8 +366,10 @@ public sealed class ClientDriverHost : IAsyncDisposable
             {
                 if (_sampling && flow.Gate == MirGateMode.RunGate) AppendSample(key, data);
                 var codec = GetDownCodec(key, flow.Gate);
+                int frames = 0;
                 foreach (var (frame, _raw) in codec.Feed(data))
                 {
+                    frames++;
                     if (frame.Kind == MirFrameKind.RunGatePacket && frame.Header.Ident != 0)
                     {
                         _attachment.OnServerCommand(frame.Header.Ident, frame.Header);
@@ -367,6 +377,7 @@ public sealed class ClientDriverHost : IAsyncDisposable
                     }
                     _attachment.Inject(frame);
                 }
+                TrackDecode(key, flow.Gate, data.Length, frames);
             }
             else
             {
@@ -395,6 +406,37 @@ public sealed class ClientDriverHost : IAsyncDisposable
     }
 
     private static string FlowKey(SniffFlow flow) => $"{flow.Client.Address}:{flow.Client.Port}-{flow.Server.Port}";
+
+    /// <summary>
+    /// 解码诊断：把"收到多少字节 / 解出多少帧"记在每条 RunGate 流上。
+    /// 有了它，用户报障时不必猜：字节为 0 = 抓包/进程问题；字节很多帧为 0 = 协议或定界问题。
+    /// </summary>
+    private void TrackDecode(string key, MirGateMode gate, int bytes, int frames)
+    {
+        if (gate != MirGateMode.RunGate) return;
+
+        long totalBytes, totalFrames;
+        lock (_lock)
+        {
+            _decodeStats.TryGetValue(key, out var st);
+            st = (st.Bytes + bytes, st.Frames + frames);
+            _decodeStats[key] = st;
+            totalBytes = st.Bytes;
+            totalFrames = st.Frames;
+        }
+
+        if (frames > 0 && totalFrames == frames)
+            Log?.Invoke($"[host] 流 {key} 解出首个下行帧（本批 {frames} 帧）—— 状态注入链路已通");
+
+        if (totalFrames == 0 && totalBytes >= 2048 &&
+            DateTime.UtcNow - _lastNoFrameWarnUtc > TimeSpan.FromSeconds(15))
+        {
+            _lastNoFrameWarnUtc = DateTime.UtcNow;
+            Log?.Invoke($"[host] ⚠ 流 {key} 已收到 {totalBytes} 字节但一帧都没解出：" +
+                        "① 该流量可能不是游戏协议（进程选错，点「重新识别客户端」看候选进程）；" +
+                        "② 或帧定界与本服不匹配（跑一次「自动定界」重探测）");
+        }
+    }
 
     // ---------------------------------------------------------------- 自动定界（换服适配）
 

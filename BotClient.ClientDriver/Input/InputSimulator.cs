@@ -43,6 +43,21 @@ public sealed class InputSimulator
             return false;
         }
 
+        // 界面里手动选中过某个客户端（TargetPid）：优先精确命中它，避免多开时点到别的窗口。
+        // 进程重启后 PID 会变，命中不到就自动退回下面的按名+标题匹配。
+        if (_cfg.TargetPid > 0)
+        {
+            foreach (var p in procs)
+            {
+                if (p.Id != _cfg.TargetPid) continue;
+                IntPtr pinned = p.MainWindowHandle;
+                if (pinned == IntPtr.Zero) break;
+                _hwnd = pinned;
+                _pid = (uint)p.Id;
+                return true;
+            }
+        }
+
         foreach (var p in procs)
         {
             IntPtr h = p.MainWindowHandle;

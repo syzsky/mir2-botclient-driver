@@ -31,6 +31,7 @@
           <Button x:Name="StartBtn" Content="开始挂机" Style="{StaticResource PrimaryButton}" Click="OnStartClick" />
           <Button x:Name="StopBtn" Content="停止挂机" Click="OnStopClick" />
           <Button x:Name="RediscoverBtn" Content="重新识别客户端" Click="OnRediscoverClick" />
+          <Button x:Name="ScanClientsBtn" Content="扫描客户端" Click="OnScanClientsClick" />
           <Button x:Name="SelfCheckBtn" Content="环境自检" Click="OnSelfCheckClick" />
           <Button x:Name="NpcapBtn" Content="抓包检测" Click="OnNpcapClick" />
           <Button x:Name="SettingsBtn" Content="设置 F8" Click="OnSettingsClick" />

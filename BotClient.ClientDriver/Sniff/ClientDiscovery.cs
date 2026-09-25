@@ -210,6 +210,7 @@ public static class ClientDiscovery
             if (IsBlacklisted(name)) continue;
 
             int score = 0;
+            if (cfg.TargetPid > 0 && pid == cfg.TargetPid) score += 1000;   // 界面里手动选中的那个，最优先
             if (preferConfigured && name.Equals(prefer, StringComparison.OrdinalIgnoreCase)) score += 100;
             else if (preferConfigured && name.Contains(prefer, StringComparison.OrdinalIgnoreCase)) score += 60;
 
