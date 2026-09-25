@@ -1,0 +1,95 @@
+<Window x:Class="BotClientDriverHostUi.Views.SettingsWindow"
+        xmlns="http://schemas.microsoft.com/winfx/2006/xaml/presentation"
+        xmlns:x="http://schemas.microsoft.com/winfx/2006/xaml"
+        Title="设置（botsettings.json）"
+        Height="470" Width="640" MinHeight="420" MinWidth="560"
+        Background="#FF1E1E1E" Foreground="#FFDDDDDD"
+        FontFamily="Microsoft YaHei UI" FontSize="12"
+        WindowStartupLocation="CenterOwner" ResizeMode="CanResize">
+  <Grid Margin="14">
+    <Grid.RowDefinitions>
+      <RowDefinition Height="*" />
+      <RowDefinition Height="Auto" />
+    </Grid.RowDefinitions>
+
+    <ScrollViewer Grid.Row="0" VerticalScrollBarVisibility="Auto">
+      <Grid>
+        <Grid.ColumnDefinitions>
+          <ColumnDefinition Width="Auto" />
+          <ColumnDefinition Width="*" />
+          <ColumnDefinition Width="18" />
+          <ColumnDefinition Width="Auto" />
+          <ColumnDefinition Width="*" />
+        </Grid.ColumnDefinitions>
+        <Grid.RowDefinitions>
+          <RowDefinition Height="Auto" />
+          <RowDefinition Height="Auto" />
+          <RowDefinition Height="Auto" />
+          <RowDefinition Height="Auto" />
+          <RowDefinition Height="Auto" />
+          <RowDefinition Height="Auto" />
+          <RowDefinition Height="Auto" />
+          <RowDefinition Height="Auto" />
+          <RowDefinition Height="Auto" />
+        </Grid.RowDefinitions>
+
+        <TextBlock Grid.Row="0" Grid.Column="0" Text="服务端 IP" VerticalAlignment="Center" Margin="0,0,8,8" />
+        <TextBox x:Name="HostBox" Grid.Row="0" Grid.Column="1" Margin="0,0,0,8" VerticalContentAlignment="Center" />
+        <TextBlock Grid.Row="0" Grid.Column="3" Text="端口" VerticalAlignment="Center" Margin="0,0,8,8" />
+        <TextBox x:Name="PortBox" Grid.Row="0" Grid.Column="4" Margin="0,0,0,8" VerticalContentAlignment="Center" />
+
+        <TextBlock Grid.Row="1" Grid.Column="0" Text="账号" VerticalAlignment="Center" Margin="0,0,8,8" />
+        <TextBox x:Name="AccountBox" Grid.Row="1" Grid.Column="1" Margin="0,0,0,8" VerticalContentAlignment="Center" />
+        <TextBlock Grid.Row="1" Grid.Column="3" Text="区服名" VerticalAlignment="Center" Margin="0,0,8,8" />
+        <TextBox x:Name="ServerBox" Grid.Row="1" Grid.Column="4" Margin="0,0,0,8" VerticalContentAlignment="Center" />
+
+        <TextBlock Grid.Row="2" Grid.Column="0" Text="角色名" VerticalAlignment="Center" Margin="0,0,8,8" />
+        <TextBox x:Name="CharBox" Grid.Row="2" Grid.Column="1" Margin="0,0,0,8" VerticalContentAlignment="Center" />
+        <TextBlock Grid.Row="2" Grid.Column="3" Text="攻击距离(格)" VerticalAlignment="Center" Margin="0,0,8,8" />
+        <TextBox x:Name="FightRangeBox" Grid.Row="2" Grid.Column="4" Margin="0,0,0,8" VerticalContentAlignment="Center" />
+
+        <TextBlock Grid.Row="3" Grid.Column="0" Text="走路间隔(ms)" VerticalAlignment="Center" Margin="0,0,8,8" />
+        <TextBox x:Name="WalkBox" Grid.Row="3" Grid.Column="1" Margin="0,0,0,8" VerticalContentAlignment="Center" />
+        <TextBlock Grid.Row="3" Grid.Column="3" Text="攻击间隔(ms)" VerticalAlignment="Center" Margin="0,0,8,8" />
+        <TextBox x:Name="AttackBox" Grid.Row="3" Grid.Column="4" Margin="0,0,0,8" VerticalContentAlignment="Center" />
+
+        <TextBlock Grid.Row="4" Grid.Column="0" Text="喝药间隔(ms)" VerticalAlignment="Center" Margin="0,0,8,8" />
+        <TextBox x:Name="PotionBox" Grid.Row="4" Grid.Column="1" Margin="0,0,0,8" VerticalContentAlignment="Center" />
+        <TextBlock Grid.Row="4" Grid.Column="3" Text="捡物间隔(ms)" VerticalAlignment="Center" Margin="0,0,8,8" />
+        <TextBox x:Name="PickupBox" Grid.Row="4" Grid.Column="4" Margin="0,0,0,8" VerticalContentAlignment="Center" />
+
+        <TextBlock Grid.Row="5" Grid.Column="0" Text="血量喝药 %" VerticalAlignment="Center" Margin="0,0,8,8" />
+        <TextBox x:Name="HpPotionBox" Grid.Row="5" Grid.Column="1" Margin="0,0,0,8" VerticalContentAlignment="Center" />
+        <TextBlock Grid.Row="5" Grid.Column="3" Text="蓝量喝药 %" VerticalAlignment="Center" Margin="0,0,8,8" />
+        <TextBox x:Name="MpPotionBox" Grid.Row="5" Grid.Column="4" Margin="0,0,0,8" VerticalContentAlignment="Center" />
+
+        <TextBlock Grid.Row="6" Grid.Column="0" Text="逃跑血量 %" VerticalAlignment="Center" Margin="0,0,8,8" />
+        <TextBox x:Name="EscapeBox" Grid.Row="6" Grid.Column="1" Margin="0,0,0,8" VerticalContentAlignment="Center" />
+        <TextBlock Grid.Row="6" Grid.Column="3" Text="（逃跑阈值，低于则撤）" VerticalAlignment="Center" Margin="0,0,0,8"
+                   Foreground="#FF8A8A8A" />
+
+        <CheckBox x:Name="AutoPickupCheck" Grid.Row="7" Grid.Column="0" Grid.ColumnSpan="2"
+                  Content="自动捡物" Margin="0,0,0,8" VerticalAlignment="Center" />
+        <CheckBox x:Name="HumanCheck" Grid.Row="7" Grid.Column="3" Grid.ColumnSpan="2"
+                  Content="拟真操作（鼠标轨迹/按键时长/疲劳抖动）" Margin="0,0,0,8" VerticalAlignment="Center" />
+
+        <CheckBox x:Name="SkillsCheck" Grid.Row="8" Grid.Column="0" Grid.ColumnSpan="5"
+                  Content="技能循环（多技能按优先级+条件选用；关闭=与改造前单一法术行为一致）"
+                  Margin="0,0,0,4" VerticalAlignment="Center" />
+      </Grid>
+    </ScrollViewer>
+
+    <Grid Grid.Row="1" Margin="0,12,0,0">
+      <Grid.ColumnDefinitions>
+        <ColumnDefinition Width="*" />
+        <ColumnDefinition Width="Auto" />
+      </Grid.ColumnDefinitions>
+      <TextBlock Grid.Column="0" Text="保存后立即生效（正在挂机也会热更新）；密码不在此文件，本宿主不登录。"
+                 Foreground="#FF8A8A8A" VerticalAlignment="Center" TextWrapping="Wrap" />
+      <StackPanel Grid.Column="1" Orientation="Horizontal">
+        <Button Content="确定" Width="80" IsDefault="True" Click="OnOkClick" />
+        <Button Content="取消" Width="80" IsCancel="True" Margin="0" />
+      </StackPanel>
+    </Grid>
+  </Grid>
+</Window>

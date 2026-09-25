@@ -27,11 +27,15 @@ jobs:
         with:
           dotnet-version: '8.0.x'
 
-      - name: 还原依赖
-        run: dotnet restore BotClientDriverHost/BotClientDriverHost.csproj
+      - name: 还原依赖（无界面宿主 + 图形宿主）
+        run: |
+          dotnet restore BotClientDriverHost/BotClientDriverHost.csproj
+          dotnet restore BotClientDriverHostUi/BotClientDriverHostUi.csproj
 
       - name: 编译（Release 验证）
-        run: dotnet build BotClientDriverHost/BotClientDriverHost.csproj -c Release -r win-x64 --no-restore -v minimal
+        run: |
+          dotnet build BotClientDriverHost/BotClientDriverHost.csproj -c Release -r win-x64 --no-restore -v minimal
+          dotnet build BotClientDriverHostUi/BotClientDriverHostUi.csproj -c Release -r win-x64 --no-restore -v minimal
 
       - name: 离线定界自测（换服自动定界）
         run: dotnet run --project tools/FramingSelfTest/FramingSelfTest.csproj -c Release -v minimal
@@ -48,6 +52,18 @@ jobs:
           -p:EnableCompressionInSingleFile=true
           -p:DebugType=none
           -o publish
+
+      # 图形宿主（WPF 主界面）：与上面的无界面宿主共用 botsettings.json / clientdriver.json，
+      # 打包形态一致（win-x64 self-contained singlefile + requireAdministrator）。
+      - name: 发布图形宿主 win-x64 单文件
+        run: >
+          dotnet publish BotClientDriverHostUi/BotClientDriverHostUi.csproj
+          -c Release -r win-x64 --self-contained true --no-restore
+          -p:PublishSingleFile=true
+          -p:IncludeNativeLibrariesForSelfExtract=true
+          -p:EnableCompressionInSingleFile=true
+          -p:DebugType=none
+          -o publish-ui
 
       # 把官方 Npcap 安装器原样放进分发包：宿主首次运行检测到缺失时会拉起官方安装向导
       # （免费版 Npcap 不支持 /S 静默安装，详见 NpcapEnvironment.TryInstall），装完宿主自动继续。
@@ -69,6 +85,10 @@ jobs:
             $out = Join-Path $dir $name
             Invoke-WebRequest -UseBasicParsing -Uri "https://npcap.com/dist/$name" -OutFile $out -TimeoutSec 300
             Write-Host ("[npcap] 已附带 {0} ({1:N2} MB)" -f $name, ((Get-Item $out).Length / 1MB))
+            # 图形宿主同样需要随包安装器（两个宿主共用同一份抓包环境）
+            $dir2 = "publish-ui/npcap"
+            New-Item -ItemType Directory -Force -Path $dir2 | Out-Null
+            Copy-Item $out (Join-Path $dir2 $name) -Force
             "NPCAP_BUNDLED=$name" | Out-File -Append $env:GITHUB_ENV
           } catch {
             Write-Warning "[npcap] 附带安装器失败（不影响构建）: $_"
@@ -149,6 +169,46 @@ jobs:
 
           # 断言全部通过：显式归零，避免末条用例的非零退出码污染本步骤结果
           exit 0
+
+      - name: 图形宿主冒烟校验
+        shell: pwsh
+        run: |
+          $exe = "publish-ui/BotClientDriverHostUi.exe"
+          if (-not (Test-Path $exe)) { throw "未找到 $exe" }
+          Write-Host ("[1] exe 体积: {0:N2} MB" -f ((Get-Item $exe).Length / 1MB))
+
+          $fs = [IO.File]::OpenRead($exe)
+          $br = New-Object IO.BinaryReader($fs)
+          $fs.Position = 0x3C; $peOff = $br.ReadInt32()
+          $fs.Position = $peOff + 4; $machine = $br.ReadUInt16()
+          $br.Close(); $fs.Close()
+          Write-Host ("[2] PE Machine = 0x{0:X4}" -f $machine)
+          if ($machine -ne 0x8664) { throw "不是 x64 PE 文件" }
+
+          $dlls = @(Get-ChildItem publish-ui -Filter *.dll -File)
+          if ($dlls.Count -gt 0) { throw ("存在未内嵌的 dll: " + ($dlls.Name -join ",")) }
+          Write-Host "[3] 无散落 dll，单文件发布成立"
+
+          $text = [Text.Encoding]::UTF8.GetString([IO.File]::ReadAllBytes($exe))
+          if ($text -notmatch "requireAdministrator") { throw "manifest 未嵌入 requireAdministrator" }
+          Write-Host "[4] manifest: requireAdministrator 已嵌入"
+
+          # WPF 程序集名与界面资源必须真的进了单文件（防止 XAML 编译期被裁掉）
+          if ($text -notmatch "BotClientDriverHostUi") { throw "单文件里找不到图形宿主程序集名" }
+          Write-Host "[5] 图形宿主程序集已内嵌"
+
+          "### 图形宿主校验" >> $env:GITHUB_STEP_SUMMARY
+          "- x64 PE 校验：通过" >> $env:GITHUB_STEP_SUMMARY
+          "- 管理员 manifest：通过" >> $env:GITHUB_STEP_SUMMARY
+          "- 单文件无散落 dll：通过" >> $env:GITHUB_STEP_SUMMARY
+          exit 0
+
+      - name: 上传图形宿主产物
+        uses: actions/upload-artifact@v4
+        with:
+          name: BotClientDriverHostUi-win-x64
+          path: publish-ui/**
+          if-no-files-found: error
 
       - name: 产物清单
         shell: pwsh

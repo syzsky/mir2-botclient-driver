@@ -1,0 +1,236 @@
+<Window x:Class="BotClientDriverHostUi.Views.MainWindow"
+        xmlns="http://schemas.microsoft.com/winfx/2006/xaml/presentation"
+        xmlns:x="http://schemas.microsoft.com/winfx/2006/xaml"
+        xmlns:views="clr-namespace:BotClientDriverHostUi.Views"
+        Title="传奇 · 客户端驱动模式 · 主界面"
+        Height="780" Width="1220" MinHeight="560" MinWidth="920"
+        Background="#FF1E1E1E" Foreground="#FFDDDDDD"
+        FontFamily="Microsoft YaHei UI" FontSize="12"
+        WindowStartupLocation="CenterScreen">
+  <Grid>
+    <Grid.RowDefinitions>
+      <RowDefinition Height="Auto" />
+      <RowDefinition Height="Auto" />
+      <RowDefinition Height="*" />
+      <RowDefinition Height="Auto" />
+    </Grid.RowDefinitions>
+
+    <!-- 顶部命令栏 -->
+    <Border Grid.Row="0" Background="#FF252526" BorderBrush="#FF3F3F46" BorderThickness="0,0,0,1" Padding="8,6">
+      <Grid>
+        <Grid.ColumnDefinitions>
+          <ColumnDefinition Width="*" />
+          <ColumnDefinition Width="Auto" />
+        </Grid.ColumnDefinitions>
+        <StackPanel Grid.Column="0" Orientation="Vertical" VerticalAlignment="Center">
+          <TextBlock Text="传奇 · 客户端驱动模式（BotClient C 方案）" FontSize="14" FontWeight="Bold" Foreground="#FFE8E8E8" />
+          <TextBlock x:Name="SubTitleText" Text="复用模式：账号/密码/服务端地址取自你自己的客户端登录过程"
+                     FontSize="11" Foreground="#FF8A8A8A" />
+        </StackPanel>
+        <StackPanel Grid.Column="1" Orientation="Horizontal" HorizontalAlignment="Right" VerticalAlignment="Center">
+          <Button x:Name="StartBtn" Content="开始挂机" Style="{StaticResource PrimaryButton}" Click="OnStartClick" />
+          <Button x:Name="StopBtn" Content="停止挂机" Click="OnStopClick" />
+          <Button x:Name="RediscoverBtn" Content="重新识别客户端" Click="OnRediscoverClick" />
+          <Button x:Name="SelfCheckBtn" Content="环境自检" Click="OnSelfCheckClick" />
+          <Button x:Name="NpcapBtn" Content="抓包检测" Click="OnNpcapClick" />
+          <Button x:Name="SettingsBtn" Content="设置 F8" Click="OnSettingsClick" />
+          <Button x:Name="ClearLogBtn" Content="清空日志" Click="OnClearLogClick" />
+          <Button x:Name="AboutBtn" Content="帮助" Click="OnAboutClick" />
+        </StackPanel>
+      </Grid>
+    </Border>
+
+    <!-- 状态栏 -->
+    <Border Grid.Row="1" Background="#FF202020" BorderBrush="#FF3F3F46" BorderThickness="0,0,0,1" Padding="8,4">
+      <StackPanel Orientation="Horizontal">
+        <Border Style="{StaticResource ChipBorder}">
+          <StackPanel Orientation="Horizontal">
+            <TextBlock Text="角色" Foreground="#FF8A8A8A" />
+            <TextBlock x:Name="ChipChar" Text="—" Margin="5,0,0,0" Foreground="#FFE8E8E8" />
+          </StackPanel>
+        </Border>
+        <Border Style="{StaticResource ChipBorder}">
+          <StackPanel Orientation="Horizontal">
+            <TextBlock Text="等级" Foreground="#FF8A8A8A" />
+            <TextBlock x:Name="ChipLevel" Text="—" Margin="5,0,0,0" Foreground="#FFE8E8E8" />
+          </StackPanel>
+        </Border>
+        <Border Style="{StaticResource ChipBorder}">
+          <StackPanel Orientation="Horizontal">
+            <TextBlock Text="地图" Foreground="#FF8A8A8A" />
+            <TextBlock x:Name="ChipMap" Text="—" Margin="5,0,0,0" Foreground="#FFE8E8E8" />
+          </StackPanel>
+        </Border>
+        <Border Style="{StaticResource ChipBorder}">
+          <StackPanel Orientation="Horizontal">
+            <TextBlock Text="坐标" Foreground="#FF8A8A8A" />
+            <TextBlock x:Name="ChipPos" Text="—" Margin="5,0,0,0" Foreground="#FFE8E8E8" />
+          </StackPanel>
+        </Border>
+        <Border Style="{StaticResource ChipBorder}">
+          <StackPanel Orientation="Horizontal">
+            <TextBlock Text="HP" Foreground="#FF8A8A8A" />
+            <TextBlock x:Name="ChipHp" Text="—" Margin="5,0,0,0" Foreground="#FF7ED07E" />
+          </StackPanel>
+        </Border>
+        <Border Style="{StaticResource ChipBorder}">
+          <StackPanel Orientation="Horizontal">
+            <TextBlock Text="MP" Foreground="#FF8A8A8A" />
+            <TextBlock x:Name="ChipMp" Text="—" Margin="5,0,0,0" Foreground="#FF7EA8FF" />
+          </StackPanel>
+        </Border>
+        <Border Style="{StaticResource ChipBorder}">
+          <StackPanel Orientation="Horizontal">
+            <TextBlock Text="金币" Foreground="#FF8A8A8A" />
+            <TextBlock x:Name="ChipGold" Text="—" Margin="5,0,0,0" Foreground="#FFFFD98A" />
+          </StackPanel>
+        </Border>
+        <Border Style="{StaticResource ChipBorder}">
+          <StackPanel Orientation="Horizontal">
+            <TextBlock Text="嗅探" Foreground="#FF8A8A8A" />
+            <TextBlock x:Name="ChipSniff" Text="未开始" Margin="5,0,0,0" Foreground="#FFE8E8E8" />
+          </StackPanel>
+        </Border>
+        <Border Style="{StaticResource ChipBorder}">
+          <StackPanel Orientation="Horizontal">
+            <TextBlock Text="UI 状态" Foreground="#FF8A8A8A" />
+            <TextBlock x:Name="ChipUi" Text="—" Margin="5,0,0,0" Foreground="#FFE8E8E8" />
+          </StackPanel>
+        </Border>
+        <Border Style="{StaticResource ChipBorder}">
+          <StackPanel Orientation="Horizontal">
+            <TextBlock Text="校准" Foreground="#FF8A8A8A" />
+            <TextBlock x:Name="ChipCal" Text="—" Margin="5,0,0,0" Foreground="#FFE8E8E8" />
+          </StackPanel>
+        </Border>
+      </StackPanel>
+    </Border>
+
+    <!-- 主体：左列表 + 右观测/日志 -->
+    <Grid Grid.Row="2">
+      <Grid.ColumnDefinitions>
+        <ColumnDefinition Width="300" MinWidth="200" />
+        <ColumnDefinition Width="4" />
+        <ColumnDefinition Width="*" MinWidth="420" />
+      </Grid.ColumnDefinitions>
+
+      <TabControl x:Name="LeftTabs" Grid.Column="0">
+        <TabItem Header="怪物">
+          <ListView x:Name="MonsterList">
+            <ListView.View>
+              <GridView>
+                <GridViewColumn Header="名称" Width="130" DisplayMemberBinding="{Binding Name}" />
+                <GridViewColumn Header="距离" Width="52" DisplayMemberBinding="{Binding Distance}" />
+                <GridViewColumn Header="坐标" Width="88" DisplayMemberBinding="{Binding Position}" />
+              </GridView>
+            </ListView.View>
+          </ListView>
+        </TabItem>
+        <TabItem Header="NPC">
+          <ListView x:Name="NpcList">
+            <ListView.View>
+              <GridView>
+                <GridViewColumn Header="名称" Width="130" DisplayMemberBinding="{Binding Name}" />
+                <GridViewColumn Header="距离" Width="52" DisplayMemberBinding="{Binding Distance}" />
+                <GridViewColumn Header="坐标" Width="88" DisplayMemberBinding="{Binding Position}" />
+              </GridView>
+            </ListView.View>
+          </ListView>
+        </TabItem>
+        <TabItem Header="地面物品">
+          <ListView x:Name="ItemList">
+            <ListView.View>
+              <GridView>
+                <GridViewColumn Header="名称" Width="130" DisplayMemberBinding="{Binding Name}" />
+                <GridViewColumn Header="距离" Width="52" DisplayMemberBinding="{Binding Distance}" />
+                <GridViewColumn Header="坐标" Width="88" DisplayMemberBinding="{Binding Position}" />
+              </GridView>
+            </ListView.View>
+          </ListView>
+        </TabItem>
+        <TabItem Header="玩家">
+          <ListView x:Name="PlayerList">
+            <ListView.View>
+              <GridView>
+                <GridViewColumn Header="名称" Width="130" DisplayMemberBinding="{Binding Name}" />
+                <GridViewColumn Header="距离" Width="52" DisplayMemberBinding="{Binding Distance}" />
+                <GridViewColumn Header="坐标" Width="88" DisplayMemberBinding="{Binding Position}" />
+              </GridView>
+            </ListView.View>
+          </ListView>
+        </TabItem>
+        <TabItem Header="状态/定点">
+          <Grid Margin="8">
+            <Grid.RowDefinitions>
+              <RowDefinition Height="Auto" />
+              <RowDefinition Height="Auto" />
+              <RowDefinition Height="*" />
+            </Grid.RowDefinitions>
+            <StackPanel Grid.Row="0" Orientation="Horizontal" Margin="0,0,0,8">
+              <TextBlock Text="定点 X" VerticalAlignment="Center" Margin="0,0,4,0" />
+              <TextBox x:Name="FightXBox" Width="56" Text="0" VerticalContentAlignment="Center" />
+              <TextBlock Text="Y" VerticalAlignment="Center" Margin="8,0,4,0" />
+              <TextBox x:Name="FightYBox" Width="56" Text="0" VerticalContentAlignment="Center" />
+              <Button Content="应用定点" Click="OnApplyFightPointClick" Margin="10,0,6,0" />
+              <Button Content="取消定点" Click="OnClearFightPointClick" Margin="0" />
+            </StackPanel>
+            <CheckBox x:Name="SniffOnlyCheck" Grid.Row="1" Content="仅嗅探（只做状态镜像，不产生任何点击）"
+                      Margin="0,0,0,8" VerticalAlignment="Center" />
+            <TextBox x:Name="StatusText" Grid.Row="2" IsReadOnly="True" AcceptsReturn="True" TextWrapping="Wrap"
+                     VerticalScrollBarVisibility="Auto" HorizontalScrollBarVisibility="Auto"
+                     FontFamily="Consolas" FontSize="11" Background="#FF161616" BorderThickness="0" />
+          </Grid>
+        </TabItem>
+      </TabControl>
+
+      <GridSplitter Grid.Column="1" Width="4" HorizontalAlignment="Stretch" VerticalAlignment="Stretch"
+                    Background="#FF3F3F46" ResizeBehavior="PreviousAndNext" />
+
+      <Grid Grid.Column="2">
+        <Grid.RowDefinitions>
+          <RowDefinition Height="*" MinHeight="170" />
+          <RowDefinition Height="4" />
+          <RowDefinition Height="270" MinHeight="120" />
+        </Grid.RowDefinitions>
+
+        <Border Grid.Row="0" Background="#FF141414" BorderBrush="#FF3F3F46" BorderThickness="0,0,0,1">
+          <Grid>
+            <views:ObserveView x:Name="Observe" ClipToBounds="True" />
+            <TextBlock Text="视图观测区：以角色为中心，按状态通道的真实数据绘制（白=自己 红=怪物 黄=NPC 蓝=玩家 青=物品）"
+                       Margin="8,6,8,0" HorizontalAlignment="Left" VerticalAlignment="Top"
+                       Foreground="#FF7A7A7A" TextWrapping="Wrap" />
+          </Grid>
+        </Border>
+
+        <GridSplitter Grid.Row="1" Height="4" HorizontalAlignment="Stretch" VerticalAlignment="Stretch"
+                      Background="#FF3F3F46" ResizeBehavior="PreviousAndNext" />
+
+        <DockPanel Grid.Row="2">
+          <Border DockPanel.Dock="Top" Background="#FF252526" BorderBrush="#FF3F3F46" BorderThickness="0,1,0,1" Padding="8,4">
+            <Grid>
+              <Grid.ColumnDefinitions>
+                <ColumnDefinition Width="*" />
+                <ColumnDefinition Width="Auto" />
+              </Grid.ColumnDefinitions>
+              <TextBlock Grid.Column="0" Text="运行日志" FontWeight="Bold" Foreground="#FFCCCCCC" VerticalAlignment="Center" />
+              <CheckBox x:Name="AutoScrollCheck" Grid.Column="1" Content="自动滚动" IsChecked="True" VerticalAlignment="Center" />
+            </Grid>
+          </Border>
+          <ListBox x:Name="LogList" FontFamily="Consolas" FontSize="12" Background="#FF121212">
+            <ListBox.ItemTemplate>
+              <DataTemplate>
+                <TextBlock Text="{Binding Display}" Foreground="{Binding Brush}" />
+              </DataTemplate>
+            </ListBox.ItemTemplate>
+          </ListBox>
+        </DockPanel>
+      </Grid>
+    </Grid>
+
+    <!-- 底部提示 -->
+    <Border Grid.Row="3" Background="#FF252526" BorderBrush="#FF3F3F46" BorderThickness="0,1,0,0" Padding="8,4">
+      <TextBlock x:Name="HintText" Foreground="#FF9A9A9A"
+                 Text="F8 设置 · 需管理员 + Npcap（首次运行会拉起安装向导）· 视图校准：BotClientDriverHost.exe --calibrate --quick，自动收敛：--autocalibrate" />
+    </Border>
+  </Grid>
+</Window>

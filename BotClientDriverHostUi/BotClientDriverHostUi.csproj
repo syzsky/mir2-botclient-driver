@@ -1,0 +1,50 @@
+<Project Sdk="Microsoft.NET.Sdk">
+
+  <!--
+    C 方案（客户端驱动挂机）图形宿主工程
+    - 与无界面宿主 BotClientDriverHost 共用同一份 botsettings.json / clientdriver.json
+    - 复用 BotClient.Core（协议/运行时/AI）+ BotClient.ClientDriver（嗅探/回注/进图/拟真）
+    - 发布形态：win-x64 self-contained + singlefile + requireAdministrator（嗅探需管理员 + Npcap）
+    - 注意：禁止 PublishTrimmed —— WinDivert/反射/JSON/WPF 会被裁掉
+  -->
+  <PropertyGroup>
+    <OutputType>WinExe</OutputType>
+    <TargetFramework>net8.0-windows</TargetFramework>
+    <Nullable>enable</Nullable>
+    <ImplicitUsings>enable</ImplicitUsings>
+    <LangVersion>latest</LangVersion>
+    <UseWPF>true</UseWPF>
+    <AssemblyName>BotClientDriverHostUi</AssemblyName>
+    <RootNamespace>BotClientDriverHostUi</RootNamespace>
+
+    <RuntimeIdentifier>win-x64</RuntimeIdentifier>
+    <SelfContained>true</SelfContained>
+    <PublishSingleFile>true</PublishSingleFile>
+    <IncludeNativeLibrariesForSelfExtract>true</IncludeNativeLibrariesForSelfExtract>
+    <EnableCompressionInSingleFile>true</EnableCompressionInSingleFile>
+    <DebugType>none</DebugType>
+    <InvariantGlobalization>false</InvariantGlobalization>
+    <SatelliteResourceLanguages>zh-Hans;en</SatelliteResourceLanguages>
+    <ApplicationManifest>app.manifest</ApplicationManifest>
+    <EnableWindowsTargeting>true</EnableWindowsTargeting>
+    <NoWarn>$(NoWarn);CA1416;NETSDK1206;WPF0001</NoWarn>
+  </PropertyGroup>
+
+  <ItemGroup>
+    <ProjectReference Include="..\BotClient.Core\BotClient.Core.csproj" />
+    <ProjectReference Include="..\BotClient.ClientDriver\BotClient.ClientDriver.csproj" />
+    <!-- 只为了共用 HostSettings（botsettings.json 的唯一 schema 定义），不复制粘贴配置文件结构 -->
+    <ProjectReference Include="..\BotClientDriverHost\BotClientDriverHost.csproj" />
+  </ItemGroup>
+
+  <!--
+    图形宿主引用了无界面宿主工程（只为了共用 HostSettings —— botsettings.json 的唯一 schema），
+    引用 Exe 工程会顺带拷出一份 BotClientDriverHost.runtimeconfig.json。单文件发布下真正生效的是
+    本工程的 runtimeconfig（已内嵌进 exe），这份散落文件既没用途又容易让人误以为有两个可执行程序，
+    发布完成后删掉，保持分发包只有一个 exe。
+  -->
+  <Target Name="RemoveStrayRuntimeConfig" AfterTargets="Publish">
+    <Delete Files="$(PublishDir)BotClientDriverHost.runtimeconfig.json" ContinueOnError="true" />
+  </Target>
+
+</Project>
