@@ -1,0 +1,23 @@
+<Project Sdk="Microsoft.NET.Sdk">
+
+  <!-- 离线自测：不连客户端、不抓包。直接编译 ClientDriver 里的定界源码，
+       喂合成样本验证"换服自动定界"能不能认出来。CI 里每次 push 都会跑。 -->
+  <PropertyGroup>
+    <OutputType>Exe</OutputType>
+    <TargetFramework>net8.0</TargetFramework>
+    <Nullable>enable</Nullable>
+    <LangVersion>latest</LangVersion>
+    <ImplicitUsings>enable</ImplicitUsings>
+    <EnableDefaultCompileItems>false</EnableDefaultCompileItems>
+    <AssemblyName>FramingSelfTest</AssemblyName>
+    <RootNamespace>FramingSelfTest</RootNamespace>
+  </PropertyGroup>
+
+  <ItemGroup>
+    <Compile Include="Program.cs" />
+    <Compile Include="../../BotClient.ClientDriver/Sniff/Framing.cs" />
+    <Compile Include="../../BotClient.ClientDriver/Sniff/SplitterAutoDetector.cs" />
+    <Compile Include="../../BotClient.Core/Protocol/Grobal2.cs" />
+  </ItemGroup>
+
+</Project>

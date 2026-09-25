@@ -12,6 +12,12 @@
   "ReadOnlySniff": true,
   "MapDirHint": "",
 
+  "_说明_Framing": "换服适配用。留 null = 自动（先按默认经典定界跑，首启日志会给出探测报告）；跑一次 --autoframe 命中后会写回这里，下次启动直接生效，不需要改代码重编译。",
+  "Framing": null,
+
+  "_说明_CmdOverrides": "命令码差异（L3 层）。key = Grobal2 里的 CM_/SM_ 常量名，value = 该服的编号；只填对不上的，其余走内置表。",
+  "CmdOverrides": {},
+
   "View": {
     "ViewLeft": 0,
     "ViewTop": 0,

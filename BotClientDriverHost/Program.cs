@@ -199,6 +199,27 @@ internal static class Program
 
         Say(host.SelfCheck());
 
+        if (cli.AutoFrame)
+        {
+            int rc = await host.AutoFrameAsync(15, ct);
+            if (rc == 0)
+            {
+                try
+                {
+                    cfg.Save(driverPath);
+                    Say($"[host] 定界档已写回 {driverPath} 的 framing 段：下次启动自动生效（换服只需重跑本参数）");
+                }
+                catch (Exception ex)
+                {
+                    Say($"[host] 定界已在本进程生效，但写回配置失败: {ex.Message}");
+                }
+            }
+            else
+            {
+                Say("[host] 自动定界未成功：本次仍按现有定界运行；可多走几步/多打几下后重跑 --autoframe");
+            }
+        }
+
         if (host.Credentials.Latest == null)
         {
             Say("[host] 提示：账号密码在你**下一次点登录**（含掉线重连、切角色回登录界面）时抓取；" +
@@ -426,6 +447,9 @@ internal sealed class Cli
 
     public bool ShowHelp { get; private set; }
 
+    /// <summary>换服适配：只读采样后自动探测帧定界，并写回 clientdriver.json 的 framing 段。</summary>
+    public bool AutoFrame { get; private set; }
+
     public int FightPointX { get; private set; } = -1;
 
     public int FightPointY { get; private set; } = -1;
@@ -483,6 +507,9 @@ internal sealed class Cli
                 case "--sniff-only":
                     cli.SniffOnly = true;
                     break;
+                case "--autoframe":
+                    cli.AutoFrame = true;
+                    break;
                 case "--login":
                 case "--direct":
                     cli.Login = true;
@@ -524,6 +551,8 @@ internal sealed class Cli
             模式:
               --calibrate             校准模式：量取视口/小地图/背包/对话框坐标并写回配置，不登录
               --sniff-only            只嗅探 + 状态镜像，不做任何点击（先验证抓包链路用）
+              --autoframe             换服适配：只读采样 15 秒自动探测帧定界（魔数/长度字段/头长），
+                                      成功则写回 clientdriver.json 的 framing 段，**换服不必再改代码**
 
             挂机:
               --fight-x <格> --fight-y <格>   定点挂机坐标（都不给则跟随 AI 默认行为）

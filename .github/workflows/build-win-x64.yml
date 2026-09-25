@@ -33,6 +33,9 @@ jobs:
       - name: 编译（Release 验证）
         run: dotnet build BotClientDriverHost/BotClientDriverHost.csproj -c Release -r win-x64 --no-restore -v minimal
 
+      - name: 离线定界自测（换服自动定界）
+        run: dotnet run --project tools/FramingSelfTest/FramingSelfTest.csproj -c Release -v minimal
+
       - name: 发布 win-x64 单文件
         run: >
           dotnet publish BotClientDriverHost/BotClientDriverHost.csproj

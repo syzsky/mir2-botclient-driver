@@ -1,5 +1,6 @@
 using System.Text.Json;
 using System.Text.Json.Serialization;
+using BotClient.ClientDriver.Sniff;
 
 namespace BotClient.ClientDriver;
 
@@ -44,6 +45,21 @@ public sealed class ClientDriverConfig
     /// 留空也能跑：退化为"换图成功即认定可进入"的探测式判定，并把实测结果写进缓存。
     /// </summary>
     public string MapDirHint { get; set; } = "";
+
+    // ---------------------------------------------------------------- 跨服适配
+
+    /// <summary>
+    /// 帧定界档 —— **换服不用改代码**的地方。
+    /// 留空 = 经典 Mir2 定界；不同服/引擎填 magic + 长度字段位置/位宽/头长即可。
+    /// 也可用 <c>--autoframe</c> 只读采样后自动探测并写回本字段（探测结果含置信度 Note）。
+    /// </summary>
+    public FramingProfile? Framing { get; set; }
+
+    /// <summary>
+    /// 命令码手工覆盖：语义名 → 该服的 CM_/SM_ 数值。换服后若状态解不对，
+    /// 对着抓包核一遍命令码填这里即可，**持久化在 json**，不必再改 Core 代码。
+    /// </summary>
+    public Dictionary<string, ushort> CmdOverrides { get; set; } = new();
 
     // ---------------------------------------------------------------- 校准数据
 

@@ -1,3 +1,4 @@
+using System.Linq;
 using BotClient.Assets;
 using BotClient.ClientDriver.Input;
 using BotClient.ClientDriver.Sniff;
@@ -64,6 +65,9 @@ public sealed class ClientDriverHost : IAsyncDisposable
 
     private readonly Timer _tickTimer;
     private PacketSniffer? _sniffer;
+    private readonly Dictionary<string, List<byte[]>> _samples = new(StringComparer.Ordinal);
+    private int _sampleBytes;
+    private volatile bool _sampling;
     private ISessionAttachment? _attachment;
     private bool _disposed;
 
@@ -71,6 +75,10 @@ public sealed class ClientDriverHost : IAsyncDisposable
     {
         Config = config;
         CmdCatalog = new ReflectionCmdCatalog();
+        // 跨服命令码覆盖（持久化在 clientdriver.json）：换服时核一遍命令码填那里即可，不必改 Core 代码
+        if (config.CmdOverrides is { Count: > 0 } && CmdCatalog is ReflectionCmdCatalog rc)
+            foreach (var kv in config.CmdOverrides)
+                rc.Overrides[kv.Key] = kv.Value;
 
         Input = new InputSimulator(config);
         Mapper = new ScreenMapper(config);
@@ -316,6 +324,7 @@ public sealed class ClientDriverHost : IAsyncDisposable
 
             if (dir == FlowDirection.Downstream)
             {
+                if (_sampling && flow.Gate == MirGateMode.RunGate) AppendSample(key, data);
                 var codec = GetDownCodec(key, flow.Gate);
                 foreach (var (frame, _raw) in codec.Feed(data))
                 {
@@ -346,7 +355,7 @@ public sealed class ClientDriverHost : IAsyncDisposable
         {
             if (!_downCodecs.TryGetValue(key, out var codec))
             {
-                codec = new MirFrameCodec(gate);
+                codec = new MirFrameCodec(gate, Config.Framing);
                 _downCodecs[key] = codec;
             }
             return codec;
@@ -354,6 +363,79 @@ public sealed class ClientDriverHost : IAsyncDisposable
     }
 
     private static string FlowKey(SniffFlow flow) => $"{flow.Client.Address}:{flow.Client.Port}-{flow.Server.Port}";
+
+    // ---------------------------------------------------------------- 自动定界（换服适配）
+
+    private const int SampleLimit = 262144;
+
+    private void AppendSample(string key, byte[] data)
+    {
+        lock (_lock)
+        {
+            if (_sampleBytes >= SampleLimit) return;
+            if (!_samples.TryGetValue(key, out var list)) { list = new List<byte[]>(); _samples[key] = list; }
+            list.Add(data);
+            _sampleBytes += data.Length;
+        }
+    }
+
+    /// <summary>
+    /// 自动定界：只读采样 N 秒（**零点击**），跑 <see cref="SplitterAutoDetector"/>；
+    /// 命中就把定界档写进 <see cref="Config"/>（由调用方持久化），并让旧解码器作废重建。
+    /// 返回 0 = 成功，4 = 样本不足，5 = 未得到可信定界（原因见日志报告）。
+    /// </summary>
+    public async Task<int> AutoFrameAsync(int seconds, CancellationToken ct = default)
+    {
+        lock (_lock) { _samples.Clear(); _sampleBytes = 0; }
+        _sampling = true;
+        Log?.Invoke($"[framing] 自动定界：只读采样 {seconds}s（不点击、不改包）；" +
+                    "期间请让客户端在线并做几个动作（走一步/打一下），样本越全越准…");
+        try { await Task.Delay(TimeSpan.FromSeconds(Math.Max(3, seconds)), ct).ConfigureAwait(false); }
+        catch (OperationCanceledException) { }
+        _sampling = false;
+
+        var buckets = new List<(string Key, byte[] Data)>();
+        lock (_lock)
+        {
+            foreach (var kv in _samples)
+            {
+                int total = kv.Value.Sum(b => b.Length);
+                if (total < 256) continue;
+                var buf = new byte[total];
+                int off = 0;
+                foreach (var b in kv.Value) { Buffer.BlockCopy(b, 0, buf, off, b.Length); off += b.Length; }
+                buckets.Add((kv.Key, buf));
+            }
+        }
+
+        if (buckets.Count == 0)
+        {
+            Log?.Invoke("[framing] 样本不足（下行 RunGate 流量 < 256 字节）：请确认已登录进游戏、抓包有管理员权限，再重试");
+            return 4;
+        }
+
+        SplitterAutoDetector.Result? best = null;
+        string bestKey = "";
+        int bestScore = -1;
+        foreach (var (key, data) in buckets)
+        {
+            var r = SplitterAutoDetector.Detect(data);
+            Log?.Invoke($"[framing] 流 {key} 探测结果:{Environment.NewLine}{r.Report}");
+            int sc = r.Candidates.Count > 0 ? r.Candidates[0].Score : -1;
+            if (r.Ok && r.Best != null && sc > bestScore) { best = r; bestKey = key; bestScore = sc; }
+        }
+
+        if (best?.Best == null)
+        {
+            Log?.Invoke("[framing] 未得到可信定界：本次仍按现有定界运行（原因见上面的报告）");
+            return 5;
+        }
+
+        Config.Framing = best.Best;
+        lock (_lock) _downCodecs.Clear();
+        Log?.Invoke($"[framing] 已采用定界（流 {bestKey}）: {Config.Framing.Describe()}");
+        return 0;
+    }
 
     // ---------------------------------------------------------------- 上行命令 → UI 态机
 
@@ -383,6 +465,7 @@ public sealed class ClientDriverHost : IAsyncDisposable
         lines.Add($"小地图校准: {(Config.MiniMap.IsCalibrated ? "OK" : "缺失")}");
         lines.Add($"对话框校准: {(Config.Dialog.IsCalibrated ? "OK" : "缺失")}");
         lines.Add($"背包校准: {(Config.Bag.IsCalibrated ? "OK" : "缺失（使用快捷键喝药时不需要）")}");
+        lines.Add($"帧定界: {Config.Framing?.Describe() ?? "经典 Mir2（DDCCBBAA+长度 / '#'..'!'）"}");
         lines.Add($"命令码缺失: {(CmdCatalog.Missing.Count == 0 ? "无" : string.Join("、", CmdCatalog.Missing))}");
         lines.Add($"未接管动作: {Bridge.DescribeDropped()}");
         if (_sniffer != null)

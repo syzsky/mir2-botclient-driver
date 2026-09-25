@@ -40,21 +40,39 @@ public sealed class MirFrameCodec
     private readonly List<byte> _acc = new(65536);
     private readonly bool _runGate;
     private bool _keyPacketPending;
+    private long _discarded;
+    private readonly FramingProfile? _profile;
+    private readonly ProfileFrameSlicer? _slicer;
 
     /// <summary>被丢弃的噪声字节数（诊断用）。持续增长说明流被污染或端口识别错误。</summary>
-    public long DiscardedBytes { get; private set; }
+    public long DiscardedBytes => _slicer?.DiscardedBytes ?? _discarded;
 
-    public MirFrameCodec(MirGateMode mode)
+    /// <summary>当前生效的定界档（null = 经典 Mir2）。</summary>
+    public FramingProfile? Profile => _profile;
+
+    public MirFrameCodec(MirGateMode mode) : this(mode, null) { }
+
+    /// <summary>
+    /// 带定界档的构造。<paramref name="profile"/> 为 null / 经典档时完全走原来的 Mir2 逻辑；
+    /// 传 <see cref="FramingMode.MagicLength"/> 档则改用参数化切帧 —— 换服适配不必再改代码。
+    /// </summary>
+    public MirFrameCodec(MirGateMode mode, FramingProfile? profile)
     {
         _runGate = mode == MirGateMode.RunGate;
         _keyPacketPending = mode == MirGateMode.LoginGate;
+        if (_runGate && profile is { Mode: FramingMode.MagicLength } p && p.IsUsable)
+        {
+            _profile = p;
+            _slicer = new ProfileFrameSlicer(p);
+        }
     }
 
     /// <summary>喂入一段**按序**的下行字节，返回本次能切出的所有帧。</summary>
     public List<(MirIncomingFrame Frame, byte[] Raw)> Feed(ReadOnlySpan<byte> chunk)
     {
         var output = new List<(MirIncomingFrame, byte[])>();
-        if (chunk.Length > 0) _acc.AddRange(chunk.ToArray());
+        // 参数化切帧时由 slicer 自己持有缓冲，_acc 保持空以免重复累积
+        if (chunk.Length > 0 && _slicer == null) _acc.AddRange(chunk.ToArray());
 
         // ---- LoginGate 首包：22 字符裸密钥包（不是 '#'…'!' 帧，但必须原样识别，否则后续全错位）----
         if (_keyPacketPending)
@@ -67,7 +85,12 @@ public sealed class MirFrameCodec
             output.Add((new MirIncomingFrame(MirFrameKind.KeyPacket, key, default, null), rawKey));
         }
 
-        if (_runGate)
+        if (_slicer != null)
+        {
+            foreach (var raw in _slicer.Feed(chunk))
+                if (ParseMagicLengthFrame(raw) is { } mf) output.Add((mf, raw));
+        }
+        else if (_runGate)
         {
             while (ExtractRunGateFrame(_acc, out var f, out var raw)) output.Add((f, raw));
         }
@@ -85,10 +108,10 @@ public sealed class MirFrameCodec
         int hashIdx = acc.IndexOf((byte)'#');
         if (hashIdx < 0)
         {
-            if (acc.Count > 0) { DiscardedBytes += acc.Count; acc.Clear(); }
+            if (acc.Count > 0) { _discarded += acc.Count; acc.Clear(); }
             return false;
         }
-        if (hashIdx > 0) { DiscardedBytes += hashIdx; acc.RemoveRange(0, hashIdx); }
+        if (hashIdx > 0) { _discarded += hashIdx; acc.RemoveRange(0, hashIdx); }
 
         int bangIdx = acc.IndexOf((byte)'!');
         if (bangIdx < 0) return false;                       // 等更多数据
@@ -126,15 +149,15 @@ public sealed class MirFrameCodec
             bool prefix = true;
             for (int i = 0; i < acc.Count; i++)
                 if (acc[i] != RunGateMagic[i]) { prefix = false; break; }
-            if (!prefix) { DiscardedBytes += acc.Count; acc.Clear(); }
+            if (!prefix) { _discarded += acc.Count; acc.Clear(); }
             return false;
         }
 
         if (!MatchMagic(acc, 0))
         {
             int next = NextFrameStart(acc);
-            if (next < 0) { DiscardedBytes += acc.Count; acc.Clear(); return false; }
-            DiscardedBytes += next;
+            if (next < 0) { _discarded += acc.Count; acc.Clear(); return false; }
+            _discarded += next;
             acc.RemoveRange(0, next);
             return false;
         }
@@ -143,7 +166,7 @@ public sealed class MirFrameCodec
         uint dataLen = (uint)(acc[4] | (acc[5] << 8) | (acc[6] << 16) | (acc[7] << 24));
         if (dataLen > 1_000_000)                       // 异常长度：流被污染，整段丢弃重同步
         {
-            DiscardedBytes += acc.Count;
+            _discarded += acc.Count;
             acc.Clear();
             return false;
         }
@@ -161,6 +184,22 @@ public sealed class MirFrameCodec
         acc.RemoveRange(0, total);
         frame = new MirIncomingFrame(MirFrameKind.RunGatePacket, null, header, bodyEncoded);
         return true;
+    }
+
+    /// <summary>
+    /// 参数化定界档下的帧解析：帧界由 ProfileFrameSlicer 给出，这里只解释内容。
+    /// 头里能按 CmdOffset 读出 CmdPack → RunGatePacket；否则该档只能定界、读不出命令码，
+    /// 直接丢弃（不产帧），由 SelfCheck 提示换档或补 Overrides，避免把原始字节当文本灌进状态机。
+    /// </summary>
+    private MirIncomingFrame? ParseMagicLengthFrame(byte[] raw)
+    {
+        var p = _profile;
+        if (p == null || raw.Length < p.HeaderSize) return null;
+        if (p.CmdOffset + CmdPack.Size > raw.Length) return null;
+
+        CmdPack header = MemoryMarshal.Read<CmdPack>(raw.AsSpan(p.CmdOffset, CmdPack.Size));
+        string body = raw.Length > p.HeaderSize ? Ascii(raw.AsSpan(p.HeaderSize).ToArray()) : string.Empty;
+        return new MirIncomingFrame(MirFrameKind.RunGatePacket, null, header, body);
     }
 
     private static bool MatchMagic(List<byte> acc, int i)
