@@ -123,6 +123,30 @@ internal static class Program
     }
 
     /// <summary>
+    /// 启动嗅探。抓包是"环境依赖型"动作（要 Npcap + 管理员 + 有网卡），
+    /// 失败时给出能照着做的提示，而不是把底层 DllNotFoundException 直接甩给用户。
+    /// </summary>
+    private static bool TryStartSniffing(ClientDriverHost host)
+    {
+        try
+        {
+            host.StartSniffing();
+            return true;
+        }
+        catch (Exception ex) when (ex is DllNotFoundException
+                                   || ex.Message.Contains("抓包设备")
+                                   || ex.GetType().Name.Contains("Pcap"))
+        {
+            Console.Error.WriteLine($"[host] 抓包初始化失败: {ex.Message}");
+            Console.Error.WriteLine("[host] 请依次确认：");
+            Console.Error.WriteLine("        ① 已安装 Npcap，且安装时勾选 \"WinPcap API-compatible Mode\"（装了 WinPcap 不算）；");
+            Console.Error.WriteLine("        ② 以管理员身份运行（抓包必须）；");
+            Console.Error.WriteLine("        ③ 机器至少有一块已分配 IPv4 的网卡（虚拟机请确认网卡桥接/NAT 正常）。");
+            return false;
+        }
+    }
+
+    /// <summary>
     /// 复用模式：宿主**不登录、不碰账号**，只做三件事：
     ///   ① 认出哪个进程是客户端（进程名 / 窗口）；
     ///   ② 跟随该客户端真实的服务端连接（ServerIp 与端口无需手填）；
@@ -171,7 +195,7 @@ internal static class Program
         host.Attach(new Attachment(session, runtime));
         runtime.NpcMessage += (id, text) => host.FeedNpcDialog(id, text);
         runtime.SystemMessage += text => host.FeedSystemMessage(text);
-        host.StartSniffing();
+        if (!TryStartSniffing(host)) return 3;
 
         Say(host.SelfCheck());
 
@@ -281,7 +305,7 @@ internal static class Program
         host.Attach(new Attachment(session, runtime));
         runtime.NpcMessage += (id, text) => host.FeedNpcDialog(id, text);
         runtime.SystemMessage += text => host.FeedSystemMessage(text);
-        host.StartSniffing();
+        if (!TryStartSniffing(host)) return 3;
 
         Say(host.SelfCheck());
 
