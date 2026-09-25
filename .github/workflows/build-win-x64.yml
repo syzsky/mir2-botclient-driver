@@ -107,6 +107,9 @@ jobs:
           "- 无配置友好报错：通过" >> $env:GITHUB_STEP_SUMMARY
           "- 服务端不可达干净失败：通过" >> $env:GITHUB_STEP_SUMMARY
 
+          # 断言全部通过：显式归零，避免末条用例的非零退出码污染本步骤结果
+          exit 0
+
       - name: 产物清单
         shell: pwsh
         run: |
