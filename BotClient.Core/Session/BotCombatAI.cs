@@ -1,5 +1,7 @@
 using BotClient.Net;
+using BotClient.Human;
 using BotClient.Protocol;
+using BotClient.Session.Combat;
 
 namespace BotClient.Session;
 
@@ -23,6 +25,20 @@ public sealed class BotCombatAI
     /// <summary>法术条配置:勾选"魔法攻击"并填法术ID后,攻击自动改用对应魔法(CM_SPELL),否则物理(CM_HIT)。</summary>
     public bool MagicAttackEnabled { get; set; }
     public ushort MagicId { get; set; }
+
+    /// <summary>
+    /// 技能循环（多技能按优先级+条件选用）。null / Enabled=false = 退回改造前的"单一 MagicId"行为。
+    /// 打开后每轮攻击先问它一遍：按优先级找第一个条件满足且冷却已到的技能，全不满足才退回物理/单法术。
+    /// </summary>
+    public SkillRotationPlan? SkillPlan { get; set; }
+
+    /// <summary>
+    /// 拟人化档。对本类的影响只有一处：攻击/施法的实际间隔在下限之上叠加随机冗余。
+    /// 鼠标轨迹、按键时长、停顿由 ClientDriver 的 InputSimulator 读同一份配置（按分辨率/进程存档）。
+    /// </summary>
+    public HumanTuning Human { get; set; } = new();
+
+    private SkillRotation? _rotation;
 
     // 保护设置
     public int HpPotionPercent { get; set; } = 60;
@@ -51,14 +67,37 @@ public sealed class BotCombatAI
     public int MagicHitIntervalMs { get; set; } = 1150;
     public int SpellIntervalMs { get; set; } = 1750;
 
-    /// <summary>当前攻击方式应遵守的发包间隔(法术按各自 Delay 自适应)。</summary>
+    /// <summary>当前攻击方式应遵守的发包间隔(法术按各自 Delay 自适应，再叠加拟人随机冗余)。</summary>
     public int CurrentAttackIntervalMs()
     {
-        if (!MagicAttackEnabled || MagicId == 0) return AttackIntervalMs;
-        int interval = _runtime.MagicDelayMs.TryGetValue(MagicId, out int delay)
-            ? delay + MagicHitIntervalMs
-            : SpellIntervalMs;
-        return Math.Max(interval, AttackIntervalMs);
+        int baseInterval;
+        if (!MagicAttackEnabled || MagicId == 0)
+        {
+            baseInterval = AttackIntervalMs;
+        }
+        else
+        {
+            int interval = _runtime.MagicDelayMs.TryGetValue(MagicId, out int delay)
+                ? delay + MagicHitIntervalMs
+                : SpellIntervalMs;
+            baseInterval = Math.Max(interval, AttackIntervalMs);
+        }
+        return baseInterval + HumanJitterMs(baseInterval);
+    }
+
+    /// <summary>
+    /// 拟人化节奏抖动：在服务端限速**下限之上**再叠加一段随机等待。
+    ///
+    /// 为什么只能加不能减：下限（HitIntervalTime / MagicDelay+MagicHitIntervalTime）是服务端的
+    /// 硬判定，低于它整包被静默丢弃 —— 那不是"更像人"，那是白丢输出。
+    /// 为什么用右偏长尾而不是均匀随机：均匀随机的"每次都在固定区间里等一段"本身就是可统计特征
+    /// （区间上下界会从数据里浮出来）；右偏分布才是真人节奏的形状（多数很快、偶尔慢一拍）。
+    /// </summary>
+    private int HumanJitterMs(int baseInterval)
+    {
+        if (Human is null || !Human.Enabled || Human.CombatJitterRatio <= 0) return 0;
+        int span = Math.Max(1, (int)Math.Round(baseInterval * Human.CombatJitterRatio));
+        return Math.Min(HumanTiming.LongTail(0, span), span * 3);   // 封顶，别把节奏拖失衡
     }
 
     /// <summary>给日志用的一行间隔说明:法术间隔要能看出它取的是哪个来源,不然真机上没法判断为什么慢。</summary>
@@ -449,6 +488,59 @@ public sealed class BotCombatAI
         _loopTask = Task.Run(() => AiLoopAsync(cts.Token));
         Log?.Invoke("[AI] 战斗引擎启动");
         Log?.Invoke($"[AI] 发包间隔 {IntervalSettingsText()}");
+        Log?.Invoke($"[AI] 拟人化 {HumanTiming.Describe(Human)}");
+
+        // 技能循环：只在配置里明确 Enabled 时才建，否则保持改造前的单法术行为
+        _rotation = SkillPlan is { Enabled: true }
+            ? new SkillRotation(
+                SkillPlan,
+                ResolveMagicIdByName,
+                id => _runtime.MagicDelayMs.TryGetValue(id, out int d) ? d : 0)
+              { MagicHitIntervalMs = MagicHitIntervalMs }
+            : null;
+        Log?.Invoke(_rotation != null
+            ? $"[AI] 技能循环 开: {_rotation.Describe(DateTime.UtcNow)}"
+            : "[AI] 技能循环 关（单一法术/物理攻击）");
+    }
+
+    /// <summary>
+    /// 按技能名从服务端下发的 TClientMagic 列表里反查魔法 ID。
+    /// 列表条目格式为 "名称/ID"（见 BotRuntime 的 MyMagicList 填充处）。
+    /// 配置名允许是服务端名的子串 —— 客户端名字常带 "(Lv3)" 之类后缀，写全反而难维护。
+    /// 查不到返回 -1（该槽位本轮跳过，不报错、不影响其它技能）。
+    /// </summary>
+    private int ResolveMagicIdByName(string name)
+    {
+        if (string.IsNullOrWhiteSpace(name)) return -1;
+        foreach (string item in _runtime.SnapshotMagics())
+        {
+            int slash = item.LastIndexOf('/');
+            if (slash <= 0 || slash == item.Length - 1) continue;
+            string magicName = item[..slash].Trim();
+            if (!magicName.Contains(name, StringComparison.OrdinalIgnoreCase)) continue;
+            if (int.TryParse(item[(slash + 1)..].Trim(), out int id)) return id;
+        }
+        return -1;
+    }
+
+    /// <summary>
+    /// 按当前场面挑技能。返回 null = 这一轮没有可用技能 → 调用方退回物理/单法术。
+    /// </summary>
+    private SkillChoice? PickSkill(int targetX, int targetY)
+    {
+        if (_rotation is null || !_rotation.Enabled) return null;
+
+        int monsters = 0;
+        foreach (var dot in _runtime.Dots.Values)
+            if (dot.Kind == DotKind.Monster) monsters++;
+
+        int px = _runtime.Player.PosX;
+        int py = _runtime.Player.PosY;
+        int dist = Math.Max(Math.Abs(targetX - px), Math.Abs(targetY - py));
+        int mpPercent = _runtime.Player.MaxMp > 0 ? _runtime.Player.Mp * 100 / _runtime.Player.MaxMp : 100;
+
+        var query = new SkillQuery(mpPercent, monsters, dist, targetX, targetY, px, py);
+        return _rotation.Choose(query, DateTime.UtcNow);
     }
 
     public void Stop()
@@ -567,6 +659,14 @@ public sealed class BotCombatAI
                 }
                 if (target == null)
                 {
+                    // 拟人化：真人在空场地里会偶尔愣一下、而不是把"巡逻/换位"跑成 500ms 整的机械循环。
+                    // 只影响等待时长，不影响任何发包决策（照样巡逻、照样换位，只是节奏带毛刺）。
+                    if (Human is { Enabled: true } && HumanTiming.Chance(Human.IdleWanderChance))
+                    {
+                        int idleMs = HumanTiming.Next(Human.IdlePauseMinMs,
+                            Math.Max(Human.IdlePauseMinMs + 1, Human.IdlePauseMaxMs + 1));
+                        await Task.Delay(idleMs, ct);
+                    }
                     if (FightAtPoint)
                     {
                         await PatrolAsync(ct);
@@ -925,15 +1025,43 @@ public sealed class BotCombatAI
     private async Task MoveToAsync(int x, int y, byte dir, CancellationToken ct)
     {
         var nowUtc = DateTime.UtcNow;
-        if ((nowUtc - _lastWalkSendUtc).TotalMilliseconds < WalkIntervalMs) return;
+
+        // 拟人化：走路的节拍不能是等距脉冲。同样只加不减 —— 下限仍是服务端/驱动的走路限速，
+        // 抖动只往上叠（真人是"一阵快一阵慢"，不是"Sensor 每 400ms 准时点一格"）。
+        int interval = WalkIntervalMs;
+        if (Human is { Enabled: true } && Human.WalkJitterRatio > 0)
+        {
+            int span = Math.Max(1, (int)Math.Round(WalkIntervalMs * Human.WalkJitterRatio));
+            interval += Math.Min(HumanTiming.LongTail(0, span), span * 3);
+        }
+
+        if ((nowUtc - _lastWalkSendUtc).TotalMilliseconds < interval) return;
         _lastWalkSendUtc = nowUtc;
         await _runtime.SendWalkAsync(x, y, dir, ct);
     }
 
     /// <summary>根据法术条配置选择攻击方式:魔法攻击(CM_SPELL)或物理攻击(CM_HIT)。
-    /// CM_HIT 打包玩家自身坐标(服务端 ClientHitXY 要求),方向指向目标。</summary>
+    /// CM_HIT 打包玩家自身坐标(服务端 ClientHitXY 要求),方向指向目标。
+    ///
+    /// 技能循环开启时先走 <see cref="PickSkill"/>：它按场面（怪物数量/距离/自身MP/冷却）挑技能，
+    /// 挑中了就用那个技能，挑不中才退回配置里的单法术或物理攻击 —— 也就是说
+    /// **技能循环只是"多给一层选择"，不会让原本能打的号变哑**。</summary>
     private async Task AttackAsync(long targetId, int targetX, int targetY, byte dir, CancellationToken ct)
     {
+        var skill = PickSkill(targetX, targetY);
+        if (skill is { } chosen)
+        {
+            // 地面魔法（火墙/地雷）没有目标对象，Recog 传 0、落点用配置的偏移格
+            int spellTargetId = chosen.GroundCast ? 0 : (int)targetId;
+            await _runtime.SendSpellAsync(spellTargetId, chosen.X, chosen.Y,
+                (ushort)chosen.MagicId, chosen.SpellSlot, ct);
+            _rotation!.MarkCast(chosen.MagicId, DateTime.UtcNow);
+            Log?.Invoke($"[战斗] 技能 {chosen.Name} id={chosen.MagicId} " +
+                        $"槽{(chosen.SpellSlot >= 0 ? chosen.SpellSlot.ToString() : "auto")} → ({chosen.X},{chosen.Y})" +
+                        (chosen.GroundCast ? " [地面]" : ""));
+            return;
+        }
+
         if (MagicAttackEnabled && MagicId > 0)
         {
             await _runtime.SendSpellAsync(targetId, targetX, targetY, MagicId, ct);

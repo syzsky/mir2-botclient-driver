@@ -108,6 +108,13 @@ public sealed class ClientDriverHost : IAsyncDisposable
     public ClientDriverConfig Config { get; }
     public ICmdCatalog CmdCatalog { get; }
     public InputSimulator Input { get; }
+
+    /// <summary>
+    /// 多开标识（服务器名-区名-角色名）：只影响日志前缀 / 窗口标题 / 自检报告，不参与任何协议逻辑。
+    /// 宿主在启动时装配（配置 + 命令行 + 窗口标题 + 运行时角色名补全），这里只把它带进自检报告，方便多开时对号入座。
+    /// </summary>
+    public InstanceIdentity Identity { get; set; } = new();
+
     public ScreenMapper Mapper { get; }
     public ActionGate Gate { get; }
     public UiStateProbe Ui { get; }
@@ -158,6 +165,12 @@ public sealed class ClientDriverHost : IAsyncDisposable
     /// </summary>
     public string CurrentMap => _attachment?.CurrentMap ?? string.Empty;
 
+    /// <summary>
+    /// 当前玩家所在格（来自客户端真实封包；未进图时为 (0,0)）。
+    /// B 档自动校正把它当"走格反馈"的信号源：点一格 → 看坐标变没变、变了几格。
+    /// </summary>
+    public (int X, int Y) PlayerPosition => PlayerPos;
+
     // ---------------------------------------------------------------- 状态喂入（宿主转发）
 
     /// <summary>
@@ -171,6 +184,14 @@ public sealed class ClientDriverHost : IAsyncDisposable
     /// </summary>
     public void FeedNpcDialog(long merchantId, string? rawText) => Ui.FeedNpcDialog(merchantId, rawText);
 
+    /// <summary>
+    /// 在当前 NPC 对话里按**文本**点一个菜单项（点完不接管后续，进不进图由调用方判断）。
+    ///
+    /// 给挂机任务用：菜单是"分类 → 子地图"两级时，先点开分类（如"洞穴"）再读下一级菜单，
+    /// 才能知道下层叫什么名字。按文本点而不是按行号，是因为行号会随首页/翻页漂移。
+    /// </summary>
+    public Task<bool> SelectDialogAsync(string text, CancellationToken ct = default)
+        => _driver.TrySelectDialogAsync(-1, text, ct);
     /// <summary>
     /// SM_MENU_OK 这类提示/确认框正文。只用于对话态续期，**不当作菜单**解析，
     /// 避免把"你身上钱不够"这种提示文字误判成可点选项。
@@ -471,6 +492,7 @@ public sealed class ClientDriverHost : IAsyncDisposable
     public string SelfCheck()
     {
         var lines = new List<string>();
+        lines.Add($"多开标识: {Identity.Describe()}（服务器名-区名-角色名；仅用于区分实例）");
         lines.Add($"窗口: {(_driver.IsAttached ? "已附着" : "未附着")}");
         lines.Add($"主视图校准: {(Config.View.IsCalibrated ? "OK" : "缺失")}");
         lines.Add($"小地图校准: {(Config.MiniMap.IsCalibrated ? "OK" : "缺失")}");
@@ -480,6 +502,22 @@ public sealed class ClientDriverHost : IAsyncDisposable
         lines.Add($"命令码缺失: {(CmdCatalog.Missing.Count == 0 ? "无" : string.Join("、", CmdCatalog.Missing))}");
         lines.Add($"未接管动作: {Bridge.DescribeDropped()}");
         lines.Add($"Npcap: {Sniff.NpcapEnvironment.Describe()}");
+
+        // 拟真操作：把"到底开没开、按什么顺序放技能"直接写进自检，
+        // 免得改完配置后靠猜——排障时第一眼就能看到生效档位。
+        lines.Add($"拟真操作: 鼠标/按键/停顿 {BotClient.Human.HumanTiming.Describe(Config.Human)}");
+        if (Config.Skills is { Enabled: true } sk)
+        {
+            var order = (sk.Slots ?? new List<BotClient.Session.Combat.SkillSlotDef>())
+                .Where(s => s is { Enabled: true })
+                .OrderByDescending(s => s.Priority)
+                .Select(s => s.MagicId > 0 ? $"{s.Name}(id={s.MagicId})" : s.Name);
+            lines.Add($"技能循环: 开 → {string.Join(" > ", order)}");
+        }
+        else
+        {
+            lines.Add("技能循环: 关（单一 MagicId / 物理攻击）");
+        }
         if (_sniffer != null)
             lines.Add($"抓包: 收到 {_sniffer.PacketsSeen} 包，匹配 {_sniffer.PacketsMatched} 包");
 

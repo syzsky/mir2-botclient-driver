@@ -1,5 +1,8 @@
 using System.Diagnostics;
 using System.Runtime.InteropServices;
+using System.Text;
+using BotClient.ClientDriver.Human;
+using BotClient.Human;
 
 namespace BotClient.ClientDriver.Input;
 
@@ -77,6 +80,29 @@ public sealed class InputSimulator
         return (r.Right - r.Left, r.Bottom - r.Top);
     }
 
+    /// <summary>
+    /// 主窗口标题（原样返回）。用于多开标识推断：多开时每个客户端窗口标题一般带服务器/区/角色信息，
+    /// 宿主从这里解析出"服务器名-区名-角色名"，把日志前缀与窗口标题分开，便于分辨实例。
+    /// 定位不到窗口时返回空串（不抛异常）。
+    /// </summary>
+    public string GetWindowTitle()
+    {
+        if (_hwnd == IntPtr.Zero && !TryLocateWindow(out _))
+        {
+            return string.Empty;
+        }
+
+        int len = GetWindowTextLength(_hwnd);
+        if (len <= 0)
+        {
+            return string.Empty;
+        }
+
+        var sb = new StringBuilder(len + 2);
+        GetWindowText(_hwnd, sb, sb.Capacity);
+        return sb.ToString();
+    }
+
     /// <summary>确保游戏窗口在前台；返回 false 表示"现在不能操作"。</summary>
     public bool EnsureTargetForeground(out string reason)
     {
@@ -110,7 +136,16 @@ public sealed class InputSimulator
 
     // ---------------------------------------------------------------- 鼠标
 
-    /// <summary>点击窗口客户区坐标（含人化抖动）。</summary>
+    /// <summary>
+    /// 点击窗口客户区坐标（含人化抖动与鼠标轨迹）。
+    ///
+    /// 与改造前的区别：
+    ///   ① 鼠标不再是"瞬移到位"，而是从当前光标位置沿贝塞尔轨迹逐点移动到目标（见 <see cref="MoveHumanTo"/>）；
+    ///   ② 落位到按下的反应时间、按下时长、双击间隔全部改成右偏长尾/截断高斯分布，
+    ///      不再是"均匀随机但区间固定"的等距脉冲；
+    ///   ③ 小概率在动手前先停一下（走神/犹豫），并随连续运行时长（疲劳）放大。
+    /// 抖动量仍然受 ClickJitterPx 约束，保证不会点到相邻格子。
+    /// </summary>
     public bool ClickClient(int clientX, int clientY, bool doubleClick = false)
     {
         if (!EnsureTargetForeground(out string why))
@@ -120,27 +155,75 @@ public sealed class InputSimulator
         }
 
         var (ox, oy) = GetClientOrigin();
-        int jx = _rng.Next(-_cfg.Behavior.ClickJitterPx, _cfg.Behavior.ClickJitterPx + 1);
-        int jy = _rng.Next(-_cfg.Behavior.ClickJitterPx, _cfg.Behavior.ClickJitterPx + 1);
+        var human = _cfg.Human;
+
+        int jitter = JitterRadiusPx(human);
+        int jx = HumanTiming.Next(-jitter, jitter + 1);
+        int jy = HumanTiming.Next(-jitter, jitter + 1);
 
         int sx = ox + clientX + jx;
         int sy = oy + clientY + jy;
 
-        MoveAbsolute(sx, sy);
-        Thread.Sleep(_rng.Next(12, 34));                      // 先落位再按下，别一帧内完成（像机器人）
+        HumanTiming.MaybePause(human);                        // 动手前的偶发停顿
+        MoveHumanTo(sx, sy);                                  // 人化轨迹移动
+
+        // 落位到按下：真人有反应时间，且是右偏长尾（多数很快、偶尔顿一下）
+        Thread.Sleep(human.Enabled ? HumanTiming.LongTail(18, 40) : _rng.Next(12, 34));
 
         PressLeft();
-        Thread.Sleep(_rng.Next(_cfg.Behavior.ClickHoldMinMs, _cfg.Behavior.ClickHoldMaxMs));
+        Thread.Sleep(HoldMs());
         ReleaseLeft();
 
         if (doubleClick)
         {
-            Thread.Sleep(_rng.Next(45, 90));
+            Thread.Sleep(human.Enabled ? (int)HumanTiming.Gauss(95, 26, 42, 240) : _rng.Next(45, 90));
             PressLeft();
-            Thread.Sleep(_rng.Next(_cfg.Behavior.ClickHoldMinMs, _cfg.Behavior.ClickHoldMaxMs));
+            Thread.Sleep(HoldMs());
             ReleaseLeft();
         }
         return true;
+    }
+
+    /// <summary>本次点击的抖动半径：人化档用高斯（多数偏小、偶尔偏大），否则用配置固定值。</summary>
+    private int JitterRadiusPx(HumanTuning h)
+    {
+        int basePx = Math.Max(0, _cfg.Behavior.ClickJitterPx);
+        if (!h.Enabled || basePx == 0) return basePx;
+        return (int)Math.Round(HumanTiming.Gauss(basePx * 0.6, basePx * 0.45, 0, basePx * 1.6));
+    }
+
+    /// <summary>单次按下的持续时长（人化：高斯 + 疲劳放大）。</summary>
+    private int HoldMs()
+    {
+        var b = _cfg.Behavior;
+        int lo = Math.Max(10, b.ClickHoldMinMs);
+        int hi = Math.Max(lo + 1, b.ClickHoldMaxMs);
+        if (!_cfg.Human.Enabled) return _rng.Next(lo, hi);
+        return HumanTiming.HoldMs(lo, hi, HumanTiming.FatigueFactor(_cfg.Human));
+    }
+
+    /// <summary>
+    /// 人化移动：从当前光标位置沿贝塞尔轨迹逐点移动。
+    /// 轨迹只决定"怎么到"，终点严格是调用方算出的目标点 —— 不会点偏格子。
+    /// </summary>
+    private void MoveHumanTo(int screenX, int screenY)
+    {
+        if (!_cfg.Human.Enabled)
+        {
+            MoveAbsolute(screenX, screenY);
+            return;
+        }
+        if (!GetCursorPos(out POINT cur))
+        {
+            MoveAbsolute(screenX, screenY);
+            return;
+        }
+
+        foreach (var p in HumanMousePath.Build(cur.X, cur.Y, screenX, screenY, _cfg.Human))
+        {
+            MoveAbsolute(p.X, p.Y);
+            if (p.DelayMs > 0) Thread.Sleep(p.DelayMs);
+        }
     }
 
     private static void MoveAbsolute(int screenX, int screenY)
@@ -181,7 +264,11 @@ public sealed class InputSimulator
 
     // ---------------------------------------------------------------- 键盘
 
-    /// <summary>按一个键（如魔法快捷键 F1~F8、药水快捷键）。</summary>
+    /// <summary>
+    /// 按一个键（如魔法快捷键 F1~F8、药水快捷键）。
+    /// 人化档下键程时长用高斯+疲劳放大，并在按键前带小概率停顿；
+    /// 真人按键时长普遍在 60~150ms，改造前的固定 40~90ms 偏"急促"。
+    /// </summary>
     public void KeyPress(ushort virtualKey)
     {
         if (!EnsureTargetForeground(out string why))
@@ -189,8 +276,10 @@ public sealed class InputSimulator
             Log?.Invoke($"[input] 拒绝按键: {why}");
             return;
         }
+        var human = _cfg.Human;
+        HumanTiming.MaybePause(human);
         SendKey(virtualKey, false);
-        Thread.Sleep(_rng.Next(40, 90));
+        Thread.Sleep(human.Enabled ? HumanTiming.HoldMs(60, 150, HumanTiming.FatigueFactor(human)) : _rng.Next(40, 90));
         SendKey(virtualKey, true);
     }
 
@@ -281,4 +370,8 @@ public sealed class InputSimulator
     [DllImport("user32.dll")] private static extern bool ClientToScreen(IntPtr hWnd, ref POINT lpPoint);
     [DllImport("user32.dll")] private static extern uint GetWindowThreadProcessId(IntPtr hWnd, out uint lpdwProcessId);
     [DllImport("user32.dll")] private static extern int GetSystemMetrics(int nIndex);
+    /// <summary>取当前光标屏幕坐标（人化轨迹的起点）。</summary>
+    [DllImport("user32.dll")] private static extern bool GetCursorPos(out POINT lpPoint);
+    [DllImport("user32.dll", CharSet = CharSet.Unicode)] private static extern int GetWindowTextLength(IntPtr hWnd);
+    [DllImport("user32.dll", CharSet = CharSet.Unicode)] private static extern int GetWindowText(IntPtr hWnd, StringBuilder lpString, int nMaxCount);
 }

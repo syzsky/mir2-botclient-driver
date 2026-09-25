@@ -1,6 +1,8 @@
 using System.Text.Json;
 using System.Text.Json.Serialization;
+using BotClient.Human;
 using BotClient.Session;
+using BotClient.Session.Combat;
 
 namespace BotClientDriverHost;
 
@@ -35,6 +37,19 @@ public sealed class HostSettings
     public int MpPotionPercent { get; set; } = 40;
     public int EscapeHpPercent { get; set; } = 20;
     public bool AutoPickup { get; set; } = true;
+
+    // ---- 拟真操作（新增）----
+    /// <summary>
+    /// 拟人化档：鼠标轨迹、右键/按键时长、偶发停顿、疲劳与战斗节奏抖动。
+    /// 默认开启；写 <c>"Enabled": false</c> 可一键退回固定时序做对照。
+    /// </summary>
+    public HumanTuning Human { get; set; } = new();
+
+    /// <summary>
+    /// 技能循环：多技能按优先级 + 条件（怪物数/距离/自身MP/冷却）选用。
+    /// 默认关闭 = 与改造前的"单一 MagicId"行为完全一致；打开后示例可先抄 <see cref="SkillRotationPlan.Sample"/>。
+    /// </summary>
+    public SkillRotationPlan Skills { get; set; } = new();
 
     // ---- 其它（沿用 AppSettings 名字，便于共用文件）----
     public bool VerbosePacketLog { get; set; }
@@ -111,5 +126,9 @@ public sealed class HostSettings
         ai.ItemFilter.AutoPickup = AutoPickup;
         ai.ItemFilter.PickupRange = FightRange;
         ai.ItemFilter.PickupIntervalMs = PickupIntervalMs;
+
+        // 拟真操作：技能循环与拟人档一并灌进 AI（驱动层的鼠标/键盘读的是 ClientDriverConfig）
+        ai.SkillPlan = Skills;
+        ai.Human = Human ?? new HumanTuning();
     }
 }

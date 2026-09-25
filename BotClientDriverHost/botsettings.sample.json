@@ -16,6 +16,37 @@
   "EscapeHpPercent": 20,
   "AutoPickup": true,
 
+  "Human": {
+    "Enabled": true,
+    "TrajectoryStepsMin": 6,
+    "TrajectoryStepsMax": 18,
+    "StepDelayMinMs": 4,
+    "StepDelayMaxMs": 13,
+    "CurveBias": 0.35,
+    "OvershootChance": 0.18,
+    "OvershootPx": 14,
+    "PauseChance": 0.06,
+    "PauseMinMs": 400,
+    "PauseMaxMs": 2200,
+    "FatigueEnabled": true,
+    "FatigueFullHours": 3.0,
+    "FatigueMaxFactor": 1.6,
+    "CombatJitterRatio": 0.25,
+    "WalkJitterRatio": 0.2,
+    "IdleWanderChance": 0.12,
+    "IdlePauseMinMs": 300,
+    "IdlePauseMaxMs": 1500
+  },
+
+  "Skills": {
+    "Enabled": false,
+    "Slots": [
+      { "Name": "火墙",     "SpellSlot": 3, "Priority": 30, "MinMonsters": 3, "MaxDistance": 6, "MinSelfMpPercent": 30, "GroundCast": true, "GroundOffsetX": 0, "GroundOffsetY": -1, "ExtraCooldownMs": 2500 },
+      { "Name": "冰咆哮",   "SpellSlot": 2, "Priority": 20, "MinMonsters": 2, "MaxDistance": 7, "MinSelfMpPercent": 20, "ExtraCooldownMs": 800 },
+      { "Name": "灵魂火符", "SpellSlot": 0, "Priority": 10, "MinMonsters": 1, "MaxDistance": 8, "MinSelfMpPercent": 5 }
+    ]
+  },
+
   "VerbosePacketLog": false,
   "LanHost": "192.168.1.5",
   "AutoReloginOnDeath": false,

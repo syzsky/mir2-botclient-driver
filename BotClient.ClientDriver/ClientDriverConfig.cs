@@ -1,6 +1,8 @@
 using System.Text.Json;
 using System.Text.Json.Serialization;
 using BotClient.ClientDriver.Sniff;
+using BotClient.Human;
+using BotClient.Session.Combat;
 
 namespace BotClient.ClientDriver;
 
@@ -72,7 +74,28 @@ public sealed class ClientDriverConfig
 
     public BehaviorTuning Behavior { get; set; } = new();
 
+    /// <summary>
+    /// 拟人化操作档（轨迹/停顿/疲劳/战斗节奏抖动）。默认全开，
+    /// 出问题时把 <c>Enabled</c> 置 false 可一键退回固定时序做对照。
+    /// </summary>
+    public HumanTuning Human { get; set; } = new();
+
+    /// <summary>
+    /// 技能循环（多技能按优先级+条件选用）。默认关闭 = 与改造前的"单一 MagicId"行为完全一致；
+    /// 打开后由战斗 AI 每轮按场面挑技能，全不满足时退回物理攻击。
+    /// </summary>
+    public SkillRotationPlan Skills { get; set; } = new();
+
     public KeyBindingConfig Keys { get; set; } = new();
+
+    // ---------------------------------------------------------------- 多开标识
+
+    /// <summary>
+    /// 多开标识：服务器名-区名-角色名。只用于**日志前缀 / 控制台窗口标题 / 自检报告**，
+    /// 让多开的每一份实例一眼能认出来；不参与任何协议逻辑。
+    /// 命令行 --server-name / --zone / --character 会覆盖并写回这里。
+    /// </summary>
+    public InstanceIdentity Identity { get; set; } = new();
 
     // ---------------------------------------------------------------- 持久化
 

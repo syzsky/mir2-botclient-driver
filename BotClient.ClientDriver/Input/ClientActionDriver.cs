@@ -1,4 +1,5 @@
 using BotClient.ClientDriver.Sniff;
+using BotClient.Human;
 using BotClient.Net;
 using BotClient.Protocol;
 
@@ -94,7 +95,7 @@ public sealed class ClientActionDriver : IClientDriver
                     break;
 
                 case ClientActionKind.Spell:
-                    await CastAsync(intent.X, intent.Y, intent.Param, ct).ConfigureAwait(false);
+                    await CastAsync(intent.X, intent.Y, intent.Param, intent.Extra, ct).ConfigureAwait(false);
                     break;
 
                 case ClientActionKind.Eat:
@@ -167,24 +168,35 @@ public sealed class ClientActionDriver : IClientDriver
         await ClickCellAsync("攻击", tx, ty, _cmds.CmHit, ct).ConfigureAwait(false);
     }
 
-    private async Task CastAsync(int tx, int ty, int spellSlot, CancellationToken ct)
+    /// <summary>
+    /// 施法：先按快捷键选中法术槽，再点目标格（地面魔法点脚下/偏移格）。
+    /// </summary>
+    /// <param name="magicId">魔法 ID（日志 + 槽位兜底用）。</param>
+    /// <param name="spellSlot">
+    /// 技能循环给出的法术槽下标（0 = F1）。
+    /// &lt;0 表示调用方没指定槽位 —— 此时退回"拿 magicId 当槽位"的旧约定，
+    /// 保证没开技能表的既有配置行为完全不变。
+    /// </param>
+    private async Task CastAsync(int tx, int ty, int magicId, int spellSlot, CancellationToken ct)
     {
         if (_cfg.Keys.UseSpellHotkey)
         {
-            var key = _cfg.Keys.ResolveSpellKey(spellSlot);
+            int slot = spellSlot >= 0 ? spellSlot : magicId;
+            var key = _cfg.Keys.ResolveSpellKey(slot);
             if (key == null)
             {
-                Log?.Invoke($"[施法] 法术槽 {spellSlot} 未绑定快捷键，跳过（请在 Keys.SpellKeys 配置）");
+                Log?.Invoke($"[施法] 法术槽 {slot} 未绑定快捷键，跳过（请在 Keys.SpellKeys 配置）");
                 return;
             }
 
-            await _gate.ExecuteAsync($"选法术槽{spellSlot}", async c =>
+            await _gate.ExecuteAsync($"选法术槽{slot}", async c =>
             {
-                var t0 = DateTime.UtcNow;
                 _input.KeyPress(key.Value);
                 // 选法术本身不一定发上行包（客户端本地切换），所以只用极短的等待，
                 // 真正的确认交给随后的"点目标"一步。
-                await Task.Delay(60, c).ConfigureAwait(false);
+                // 拟人档下这个等待也带长尾：真人切完法术再点目标不会卡在 60ms 整。
+                int wait = _cfg.Human.Enabled ? HumanTiming.LongTail(60, 90) : 60;
+                await Task.Delay(wait, c).ConfigureAwait(false);
                 return true;
             }, ct).ConfigureAwait(false);
         }

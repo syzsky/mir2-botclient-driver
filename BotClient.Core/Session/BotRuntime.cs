@@ -2947,14 +2947,25 @@ public sealed class BotRuntime
         await SendActionAsync(Grobal2.CM_HIT, Player.PosX, Player.PosY, dir, ct);
     }
 
-    public async Task SendSpellAsync(long targetId, int targetX, int targetY, ushort magicId, CancellationToken ct)
+    /// <summary>兼容旧调用：不指定法术槽（驱动层按 magicId 兜底，等价于改造前行为）。</summary>
+    public Task SendSpellAsync(long targetId, int targetX, int targetY, ushort magicId, CancellationToken ct)
+        => SendSpellAsync(targetId, targetX, targetY, magicId, -1, ct);
+
+    /// <summary>
+    /// 施法。C 方案下先由驱动层按快捷键选中法术槽，再点目标格。
+    /// </summary>
+    /// <param name="spellSlot">
+    /// 法术槽下标（0 = F1）。由技能循环给出；&lt;0 时驱动层退回"按 magicId 当槽位"的旧行为。
+    /// </param>
+    public async Task SendSpellAsync(long targetId, int targetX, int targetY, ushort magicId, int spellSlot, CancellationToken ct)
     {
         if (RefuseWhileDead("spell")) return;
 
-        // ===== C 方案分流：先按快捷键选法术槽（Param），再点目标格 =====
+        // ===== C 方案分流：先按快捷键选法术槽（Extra），再点目标格（X/Y） =====
         if (await DispatchToDriverAsync(new ClientActionIntent
             {
-                Kind = ClientActionKind.Spell, X = targetX, Y = targetY, Param = magicId, TargetId = (int)targetId,
+                Kind = ClientActionKind.Spell, X = targetX, Y = targetY, Param = magicId, Extra = spellSlot,
+                TargetId = (int)targetId,
                 RawCommand = Grobal2.CM_SPELL,
             }, ct).ConfigureAwait(false)) return;
         // 原版 ClMain.pas:17067 SendSpellMsg: MakeDefaultMsg(CM_SPELL, target, X, dir=魔法ID, Y)

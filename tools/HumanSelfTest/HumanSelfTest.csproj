@@ -1,0 +1,25 @@
+<Project Sdk="Microsoft.NET.Sdk">
+
+  <!-- 离线自测：不连客户端、不抓包、不碰 Windows API。
+       只编译拟真改造的三块纯逻辑源码（拟人时序 / 人化鼠标轨迹 / 技能循环），
+       用合成输入验证"该随机的随机、该守的下限没被突破、没条件时能安全退回"。
+       跨平台跑得起来，所以 CI 里每次 push 都能验。 -->
+  <PropertyGroup>
+    <OutputType>Exe</OutputType>
+    <TargetFramework>net8.0</TargetFramework>
+    <Nullable>enable</Nullable>
+    <LangVersion>latest</LangVersion>
+    <ImplicitUsings>enable</ImplicitUsings>
+    <EnableDefaultCompileItems>false</EnableDefaultCompileItems>
+    <AssemblyName>HumanSelfTest</AssemblyName>
+    <RootNamespace>HumanSelfTest</RootNamespace>
+  </PropertyGroup>
+
+  <ItemGroup>
+    <Compile Include="Program.cs" />
+    <Compile Include="../../BotClient.Core/Human/HumanTiming.cs" />
+    <Compile Include="../../BotClient.Core/Session/Combat/SkillRotation.cs" />
+    <Compile Include="../../BotClient.ClientDriver/Human/HumanMousePath.cs" />
+  </ItemGroup>
+
+</Project>

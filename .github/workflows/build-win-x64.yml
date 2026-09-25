@@ -36,6 +36,9 @@ jobs:
       - name: 离线定界自测（换服自动定界）
         run: dotnet run --project tools/FramingSelfTest/FramingSelfTest.csproj -c Release -v minimal
 
+      - name: 离线拟真自测（拟人时序 / 鼠标轨迹 / 技能循环）
+        run: dotnet run --project tools/HumanSelfTest/HumanSelfTest.csproj -c Release -v minimal
+
       - name: 发布 win-x64 单文件
         run: >
           dotnet publish BotClientDriverHost/BotClientDriverHost.csproj

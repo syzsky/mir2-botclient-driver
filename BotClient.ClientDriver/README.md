@@ -87,6 +87,9 @@ Bot 只负责点地图、按键，节流由游戏自身的行走/攻击冷却天
 | `Input/ClientInputBridge.cs` | 兜底通道：未接管动作**只计数不发送**，把漏洞变可见 |
 | `CmdCatalog.cs` | 反射取 Core 的 CM_/SM_ 命令码，取不到可手工覆盖 |
 | `CorePatch.md` | **Core 侧改造说明（必读，改完才能跑）** |
+| `BotClient.Core/Human/HumanTiming.cs` | 拟人时序：高斯 / 右偏长尾 / 概率停顿 / 疲劳曲线（随机只做加法，不破服务端下限） |
+| `BotClient.Core/Human/HumanMousePath.cs` | 鼠标轨迹：贝塞尔 + smoothstep 加减速 + 随机弯曲 + 概率过冲回修 |
+| `BotClient.Core/Human/SkillRotation.cs` | 技能循环：多技能按优先级 + 条件（怪数/距离/MP/冷却）择一释放，挑不出即安全退回 |
 
 ---
 
@@ -221,6 +224,19 @@ dotnet publish BotClientDriverHost/BotClientDriverHost.csproj -r win-x64 -c Rele
 
 
 ---
+
+### 4.6 拟真操作（默认开，配置在 botsettings.json）
+
+所有点击/按键最终都落到 `Input/InputSimulator.cs`（唯一 SendInput 调用方），拟真就挂在这条链路上：
+
+- **鼠标轨迹**：`HumanMousePath.Build` 逐点 `SendInput` 移动（6–18 步、含曲线与概率过冲回修），
+  不再是"瞬移 + 按一下"；移动到位后有一次 18–40ms 的落点确认停顿。
+- **按压时长 / 偶发停顿**：`HumanTiming.HoldMs`（高斯 + 疲劳放大）与 `MaybePause`（概率长停顿）。
+- **战斗与走路节拍**：`BotCombatAI` 在**服务端限速下限之上**叠加右偏抖动（`CombatJitterRatio` / `WalkJitterRatio`）。
+- **技能循环**：`SkillRotation.PickSkill` 按优先级 + 条件选技能；选不出（冷却/MP/射程/未学会）退回原物理或单法术。
+- **一键对照**：`--no-human` 本次退回固定时序、`--skills` 本次强制开技能循环（都不改配置文件）。
+
+完整字段说明、示例配置与离线自测见仓库根 [`README.md`](../README.md) 的「拟真操作」一节。
 
 ## 五、校准指南（决定成败的一步）
 
