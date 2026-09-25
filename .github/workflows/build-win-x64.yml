@@ -49,8 +49,8 @@ jobs:
           -p:DebugType=none
           -o publish
 
-      # 把官方 Npcap 安装器原样放进分发包：宿主首次运行检测到缺失时会自动静默补装
-      # （/S /winpcap_mode=yes），用户侧体感就是"解压即用"。
+      # 把官方 Npcap 安装器原样放进分发包：宿主首次运行检测到缺失时会拉起官方安装向导
+      # （免费版 Npcap 不支持 /S 静默安装，详见 NpcapEnvironment.TryInstall），装完宿主自动继续。
       # Npcap 是内核驱动，无法内嵌进单文件 exe —— 这是最接近"内置"的可行形态。
       # 下载失败不阻塞构建：宿主会退化为提示用户手动放置安装器。
       - name: 附带 Npcap 安装器（可选，自用分发）
@@ -173,4 +173,4 @@ jobs:
           "- 产物：``$env:EXE_NAME``" >> $env:GITHUB_STEP_SUMMARY
           "- 体积：$([math]::Round([int]$env:EXE_SIZE_BYTES / 1MB, 2)) MB" >> $env:GITHUB_STEP_SUMMARY
           "- 随包 Npcap 安装器：$(if ($env:NPCAP_BUNDLED) { $env:NPCAP_BUNDLED } else { '未附带（下载失败，宿主会提示手动放置）' })" >> $env:GITHUB_STEP_SUMMARY
-          "- 运行前提：管理员权限 + Windows x64；Npcap 缺失时由宿主自动静默补装（随包安装器）" >> $env:GITHUB_STEP_SUMMARY
+          "- 运行前提：管理员权限 + Windows x64；Npcap 缺失时由宿主拉起随包安装器的交互式向导（免费版不支持静默安装）" >> $env:GITHUB_STEP_SUMMARY

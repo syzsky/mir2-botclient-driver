@@ -47,7 +47,7 @@ dotnet publish BotClientDriverHost/BotClientDriverHost.csproj -r win-x64 -c Rele
 
 1. **管理员权限**（抓包与模拟输入都需要；manifest 已声明 `requireAdministrator`）
 2. **Npcap**：分发包随带官方安装器（`npcap\npcap-x.xx.exe`）。首次运行检测到未安装时，
-   宿主会**自动静默补装**（`/S /winpcap_mode=yes`）并提示重跑一次；也可手动
+   宿主会**弹出官方交互式安装向导**（免费版 Npcap 不支持 `/S` 静默安装，装完自动继续）；也可手动
    `BotClientDriverHost.exe --install-npcap`。安装必须带 WinPcap 兼容模式
    （Npcap 是内核驱动，无法内嵌进单文件 exe，详见 `BotClient.ClientDriver/README.md` 第十一节）
 3. 游戏客户端已启动并**进入游戏**（本程序不改客户端任何文件）
@@ -213,13 +213,13 @@ Npcap 是内核驱动 + 用户态 DLL，**无法内嵌进单文件 exe**，所�
 ```
 解压后：BotClientDriverHost.exe + clientdriver.json + npcap\npcap-x.xx.exe
 首次运行（管理员）：
-  未装 Npcap → 自动静默安装（/S /winpcap_mode=yes）→ 提示"重新运行本程序" → 再跑即开挂
+  未装 Npcap → 弹出官方安装向导（勾 WinPcap 兼容模式）→ 装完本程序自动继续
   已装 Npcap → 直接进入挂机，无需任何手动步骤
 ```
 
 | 参数 | 作用 |
 | --- | --- |
-| （默认） | 抓包前检测缺失就自动静默补装 |
+| （默认） | 抓包前检测缺失就拉起安装向导补装 |
 | `--install-npcap [安装器]` | 只装 / 修 Npcap 后退出（路径可省，自动用随包安装器） |
 | `--no-auto-install` | 关闭自动补装 |
 

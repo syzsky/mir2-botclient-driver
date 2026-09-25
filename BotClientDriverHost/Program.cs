@@ -36,6 +36,31 @@ internal static class Program
 
     private static async Task<int> Main(string[] args)
     {
+        int code = await RunMain(args);
+        PauseBeforeExit(args, code);
+        return code;
+    }
+
+    /// <summary>
+    /// 真机踩坑：双击 exe 时，任何提前退出（缺配置、抓包环境未就绪、Npcap 装不上…）都会让控制台窗口
+    /// 瞬间关闭，用户看到的就是"闪退"，连报错都读不到。所以失败退出且看起来是双击启动时，停一下等回车。
+    /// 带参数启动的多半是脚本/命令行调用，不能卡住它们。
+    /// </summary>
+    private static void PauseBeforeExit(string[] args, int code)
+    {
+        if (code == 0 || args.Length > 0) return;
+        try
+        {
+            if (Console.IsInputRedirected || Console.IsOutputRedirected) return;
+            Console.Error.WriteLine();
+            Console.Error.WriteLine("[host] 已退出（失败原因见上方日志）。按回车键关闭本窗口。");
+            Console.ReadLine();
+        }
+        catch { /* 无控制台（被重定向）时忽略 */ }
+    }
+
+    private static async Task<int> RunMain(string[] args)
+    {
         try { Console.OutputEncoding = Encoding.UTF8; } catch { /* 某些终端不支持 */ }
         try { Encoding.RegisterProvider(CodePagesEncodingProvider.Instance); } catch { /* 已注册 */ }
 
@@ -305,15 +330,23 @@ internal static class Program
             Console.Error.WriteLine($"[host] 抓包初始化失败: {ex.Message}");
 
             // 兜底补装：万一启动闸门那次探测被安全软件干扰（或用户跳过了探测），
-            // 这里再自动装一次，装完让用户重跑即可，不必自己去官网找安装器。
+            // 这里再装一次，装完**本进程直接继续**（wpcap.dll 是首次抓包才加载的，不必重开）。
             if (!NpcapEnvironment.IsDriverPresent())
             {
-                var probe = NpcapEnvironment.Probe(BaseDir, autoInstall: true);
+                var probe = NpcapEnvironment.Probe(BaseDir, autoInstall: true, announce: m => Console.Error.WriteLine("[host] " + m));
                 if (probe.Status == NpcapProbeStatus.InstalledNow)
                 {
-                    Say("[host] " + probe.Message);
-                    Console.Error.WriteLine("[host] 请重新运行本程序（管理员）即可挂机。");
-                    return false;
+                    Say("[host] " + probe.Message + " 重新尝试抓包…");
+                    try
+                    {
+                        host.StartSniffing();
+                        return true;
+                    }
+                    catch (Exception retryEx) when (IsPcapFailure(retryEx))
+                    {
+                        // 抓包失败过之后再补装，SharpPcap 的静态初始化可能已被失败缓存污染，同进程重试未必可靠。
+                        Console.Error.WriteLine($"[host] 装完 Npcap 后仍无法抓包: {retryEx.Message}（驱动已就位，重开一次本程序即可）");
+                    }
                 }
 
                 if (probe.Status is NpcapProbeStatus.InstallFailed or NpcapProbeStatus.Missing)
@@ -332,12 +365,12 @@ internal static class Program
     }
 
     /// <summary>
-    /// Npcap 环境闸门（抓包前调用）：缺失就用随包安装器静默补装。
+    /// Npcap 环境闸门（抓包前调用）：缺失就拉起随包安装器的交互式向导补装。
     /// 目的是让用户看到的不是 DllNotFoundException，而是"下一步该做什么"。
     /// </summary>
     private static bool EnsureNpcap(bool autoInstall)
     {
-        var probe = NpcapEnvironment.Probe(BaseDir, autoInstall);
+        var probe = NpcapEnvironment.Probe(BaseDir, autoInstall, m => Console.Error.WriteLine("[host] " + m));
         switch (probe.Status)
         {
             case NpcapProbeStatus.Ready:
@@ -345,9 +378,9 @@ internal static class Program
                 return true;
 
             case NpcapProbeStatus.InstalledNow:
-                Say("[host] " + probe.Message);
-                Console.Error.WriteLine("[host] 驱动已装好，请重新运行本程序（管理员），之后不用再管这一步。");
-                return false;
+                // 刚装好：wpcap.dll 到首次抓包时才加载，本进程可以直接继续，不必像以前那样要求重开。
+                Say("[host] " + probe.Message + " 继续启动。");
+                return true;
 
             default:
                 Console.Error.WriteLine("[host] 抓包环境未就绪: " + probe.Message);
@@ -379,13 +412,14 @@ internal static class Program
         }
 
         Say($"[host] 使用安装器: {installer}");
-        if (!NpcapEnvironment.TryInstall(installer, out string detail))
+        Say("[host] 接下来会弹出 Npcap 安装向导，请在向导里勾上 “Install Npcap in WinPcap API-compatible Mode”。");
+        if (!NpcapEnvironment.TryInstall(installer, out string detail, interactive: true))
         {
             Console.Error.WriteLine($"[host] Npcap 安装失败: {detail}");
             return 3;
         }
 
-        Say("[host] Npcap 安装成功（WinPcap 兼容模式已开），现在可以直接运行本程序挂机了");
+        Say("[host] Npcap 安装成功（WinPcap 兼容模式），现在可以直接运行本程序挂机了");
         return 0;
     }
 

@@ -96,7 +96,8 @@ Bot 只负责点地图、按键，节流由游戏自身的行走/攻击冷却天
 ## 三、前置条件
 
 1. **Npcap**（必须勾 WinPcap 兼容模式）：分发包已随带官方安装器 `npcap\npcap-x.xx.exe`，
-   宿主首次运行检测到缺失会**自动静默补装**（`/S /winpcap_mode=yes`）并提示重跑；
+   宿主首次运行检测到缺失会**弹出官方交互式安装向导**（免费版 Npcap 拒绝 `/S` 静默安装），
+   勾上 WinPcap 兼容模式、装完即自动继续，不必重开；
    也可手动执行 `BotClientDriverHost.exe --install-npcap`。原理与边界见第十一节；
 2. 以**管理员**身份运行（抓包需要）；
 3. 已按 `CorePatch.md` 完成 Core 的 3 处改造；
@@ -186,7 +187,7 @@ dotnet publish BotClientDriverHost/BotClientDriverHost.csproj -r win-x64 -c Rele
 
 | 步骤 | 动作 | 验收 |
 | --- | --- | --- |
-| 1 | 抓包驱动：官方 `npcap-x.xx.exe` 放进 exe 同目录即可（首次运行自动静默补装，也可 `--install-npcap` 手动） | 自检报告出现 `Npcap: 已安装`，且不报抓包初始化失败 |
+| 1 | 抓包驱动：官方 `npcap-x.xx.exe` 放进 exe 同目录即可（首次运行弹出安装向导，也可 `--install-npcap` 手动） | 自检报告出现 `Npcap: 已安装`，且不报抓包初始化失败 |
 | 2 | 跑 `CalibrationTool`，量 F1–F8（视图 / 小地图 / 背包 / 对话框） | 逐格验证：走相邻一格，方向与距离正确（第五节） |
 | 3 | 按 `CorePatch.md` 完成 Core 3 处改造 + 宿主 15 行接线 | `SelfCheck()` 输出无缺失项 |
 
@@ -397,18 +398,21 @@ npcap\
    32 位视图 `SysWOW64` 一并认，避免"装了但位数不匹配"被误判；
 2. **已装** → 直接抓包，日志 `抓包环境: Npcap 已就绪`；
 3. **未装** → 在 exe 同目录 / `npcap\` / `redist\` / `tools\` 里找 `npcap-*.exe`；
-4. **找到** → 静默安装 `/S /winpcap_mode=yes`（等待安装器退出，最长 5 分钟），成功后提示
-   "请重新运行本程序"，退出码 3；
+4. **找到** → 拉起**官方交互式安装向导**（免费版 Npcap 拒绝 `/S` 静默安装：会弹框
+   "Silent installation is only supported in Npcap OEM" 后退出——旧版本宿主在真机上就是因此"闪退"）；
+   向导里勾上 `WinPcap API-compatible Mode`，装完复检 `wpcap.dll`，成功则**本进程直接继续**；
 5. **没找到或装失败** → 打印可照做的提示（官网地址、该放哪、`--install-npcap` 用法），退出码 3，
    不再把 `DllNotFoundException` 直接甩给用户。
 
-之所以装完要**重跑**：.NET 里 libpcap 的静态初始化失败会被缓存，同进程内重试不可靠。
+为什么"闸门探测"装完能直接继续、而"抓包失败后的兜底补装"仍建议重开一次：闸门探测发生在首次抓包**之前**，
+此时还没碰过 SharpPcap 的静态初始化，装完可直接用；一旦抓包已经失败过，.NET 对静态构造失败的缓存会让同进程
+重试不可靠，所以兜底路径装完会提示重开。
 
 ### 11.3 相关命令行
 
 | 参数 | 作用 |
 | --- | --- |
-| （默认） | 抓包前检测到 Npcap 缺失就自动静默补装 |
+| （默认） | 抓包前检测到 Npcap 缺失就拉起安装向导补装 |
 | `--install-npcap [安装器路径]` | 只装 / 修 Npcap 后退出；路径可省（自动用随包安装器） |
 | `--no-auto-install` | 关闭自动补装（想自己管控驱动时用） |
 
