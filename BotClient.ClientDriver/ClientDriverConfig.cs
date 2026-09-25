@@ -28,6 +28,14 @@ public sealed class ClientDriverConfig
     /// </summary>
     public int TargetPid { get; set; }
 
+    /// <summary>
+    /// 锁定的客户端主窗口句柄 HWND（0 = 不锁定）。由图形界面的「扫描客户端」列表选定后与 PID 一起写入：
+    /// 分辨率改了、窗口标题变了、切了全屏，句柄依然指向同一个窗口，所以它比"按尺寸/标题匹配"更稳。
+    /// 使用前必须校验（IsWindow + 归属 PID 一致 + 仍可见）：HWND 会被系统复用，窗口关闭/客户端重启即失效，
+    /// 失效时自动清零并退回按 PID → 进程名+标题匹配。
+    /// </summary>
+    public long TargetHwnd { get; set; }
+
     /// <summary>每次点击前把客户端窗口切到前台并校验；关掉它就只能靠人工保证窗口在最前，风险自负。</summary>
     public bool EnsureForeground { get; set; } = true;
 

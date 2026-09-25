@@ -430,7 +430,9 @@ public sealed class HostRunner
             List<ClientCandidate> cands = ClientDiscovery.Discover(Driver, max);
             int gameLike = cands.Count(c => c.LikelyGame);
             Emit($"[扫描] 候选客户端 {cands.Count} 条（判为游戏本体 {gameLike} 条）" +
-                 (Driver.TargetPid > 0 ? $"（当前已锁定 pid={Driver.TargetPid}）" : "（当前为自动挑选）"));
+                 (Driver.TargetHwnd != 0
+                     ? $"（当前已绑定 句柄=0x{Driver.TargetHwnd:X} / pid={Driver.TargetPid}）"
+                     : Driver.TargetPid > 0 ? $"（当前已锁定 pid={Driver.TargetPid}，未绑定句柄）" : "（当前为自动挑选）"));
 
             var best = cands.FirstOrDefault();
             if (best != null) Emit($"[扫描] 建议跟随：{best}");
@@ -448,17 +450,20 @@ public sealed class HostRunner
     }
 
     /// <summary>
-    /// 应用列表中选中的那条候选：钉住 PID + 进程名 + 服务端地址，写回 clientdriver.json。
+    /// 应用列表中选中的那条候选：钉住 PID + 窗口句柄 + 进程名 + 服务端地址，写回 clientdriver.json。
     /// 运行中的话立即用新目标重新识别一次。
     /// </summary>
     public void ApplyCandidate(ClientCandidate cand)
     {
         Driver.ProcessName = cand.ProcessName;
         Driver.TargetPid = cand.Pid;
+        Driver.TargetHwnd = cand.Hwnd;   // 句柄绑定：分辨率/标题变化不影响，失效时自动退回按 PID 匹配
         if (!string.IsNullOrWhiteSpace(cand.ServerIp)) Driver.ServerIp = cand.ServerIp;
 
         Emit($"[选择] 目标客户端：{cand.ProcessName}(pid={cand.Pid}) [{cand.Kind}] → {cand.ServerIp}:{cand.ServerPort}" +
-             (cand.HasWindow ? $"｜窗口=\"{cand.WindowTitle}\" {cand.WindowSize}" : "｜（无可见窗口）"));
+             (cand.HasWindow
+                 ? $"｜窗口={cand.HwndText} \"{cand.WindowTitle}\" {cand.WindowSize}"
+                 : "｜（无可见窗口，未绑定句柄）"));
         if (!cand.LikelyGame)
             Emit($"[选择] 注意：这条判为「{cand.Kind}」（{cand.PortKind}）——若随后抓不到游戏流量，" +
                  "请重新扫描并选『类型=游戏』那一条（渲染窗特征 + 非 HTTP 端口）。");
@@ -466,7 +471,8 @@ public sealed class HostRunner
         try
         {
             Driver.Save(_driverPath);
-            Emit($"[选择] 已写回 {_driverPath}（TargetPid={Driver.TargetPid}，进程重启后 PID 变化会自动退回按名称匹配）");
+            Emit($"[选择] 已写回 {_driverPath}（TargetPid={Driver.TargetPid} / 句柄=0x{Driver.TargetHwnd:X}；" +
+                 "进程重启后 PID 与句柄都会失效，届时自动退回按名称匹配）");
         }
         catch (Exception ex)
         {
@@ -481,10 +487,11 @@ public sealed class HostRunner
     public void ClearCandidatePin()
     {
         Driver.TargetPid = 0;
+        Driver.TargetHwnd = 0;
         try
         {
             Driver.Save(_driverPath);
-            Emit("[选择] 已取消 PID 锁定，恢复自动识别");
+            Emit("[选择] 已取消 PID/句柄绑定，恢复自动识别");
         }
         catch (Exception ex)
         {

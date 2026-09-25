@@ -2,6 +2,7 @@ using System.Diagnostics;
 using System.Runtime.InteropServices;
 using System.Text;
 using BotClient.ClientDriver.Human;
+using BotClient.ClientDriver.Sniff;
 using BotClient.Human;
 
 namespace BotClient.ClientDriver.Input;
@@ -36,6 +37,24 @@ public sealed class InputSimulator
     public bool TryLocateWindow(out string reason)
     {
         reason = "";
+
+        // ① 句柄绑定（界面选定客户端时写入）：优先级最高 —— 分辨率改了、标题变了、多开，都不影响。
+        //    HWND 会被系统复用，所以每次用之前都校验：IsWindow + 归属 PID 一致 + 仍可见。
+        if (_cfg.TargetHwnd != 0)
+        {
+            var bound = new IntPtr(_cfg.TargetHwnd);
+            if (WindowBinder.IsAlive(bound, _cfg.TargetPid))
+            {
+                _hwnd = bound;
+                _pid = (uint)WindowBinder.OwnerPid(bound);
+                return true;
+            }
+
+            Log?.Invoke($"[窗口] 绑定的句柄 0x{_cfg.TargetHwnd:X} 已失效（窗口已关闭或进程已退出），" +
+                        "自动退回按 PID / 进程名匹配；重新扫描客户端可再次钉住句柄");
+            _cfg.TargetHwnd = 0;   // 只清内存不写盘：避免运行中反复 IO，界面上重扫会覆盖回盘上配置
+        }
+
         var procs = Process.GetProcessesByName(_cfg.ProcessName);
         if (procs.Length == 0)
         {
@@ -43,31 +62,36 @@ public sealed class InputSimulator
             return false;
         }
 
-        // 界面里手动选中过某个客户端（TargetPid）：优先精确命中它，避免多开时点到别的窗口。
-        // 进程重启后 PID 会变，命中不到就自动退回下面的按名+标题匹配。
+        // ② 界面里手动选中过某个客户端（TargetPid）：优先精确命中它，避免多开时点到别的窗口。
+        //    进程重启后 PID 会变，命中不到就自动退回下面的按名+标题匹配。
+        //    窗口本身走 WindowBinder 挑（优先"像游戏本体"的顶层窗口，而不是 .NET 猜的 MainWindowHandle）。
         if (_cfg.TargetPid > 0)
         {
             foreach (var p in procs)
             {
                 if (p.Id != _cfg.TargetPid) continue;
-                IntPtr pinned = p.MainWindowHandle;
+                IntPtr pinned = WindowBinder.PickTopWindow(p.Id, out _);
+                if (pinned == IntPtr.Zero) pinned = p.MainWindowHandle;
                 if (pinned == IntPtr.Zero) break;
                 _hwnd = pinned;
                 _pid = (uint)p.Id;
+                _cfg.TargetHwnd = pinned.ToInt64();   // 自愈：PID 命中时顺手把句柄重新绑上（仅内存，不写盘）
                 return true;
             }
         }
 
         foreach (var p in procs)
         {
-            IntPtr h = p.MainWindowHandle;
+            IntPtr h = WindowBinder.PickTopWindow(p.Id, out _);
+            if (h == IntPtr.Zero) h = p.MainWindowHandle;
             if (h == IntPtr.Zero) continue;
             if (!string.IsNullOrWhiteSpace(_cfg.WindowTitleKeyword) &&
-                (p.MainWindowTitle ?? "").IndexOf(_cfg.WindowTitleKeyword, StringComparison.OrdinalIgnoreCase) < 0)
+                (WindowBinder.TitleOf(h) ?? "").IndexOf(_cfg.WindowTitleKeyword, StringComparison.OrdinalIgnoreCase) < 0)
                 continue;
 
             _hwnd = h;
             _pid = (uint)p.Id;
+            _cfg.TargetHwnd = h.ToInt64();   // 同上：自愈式绑定，下次就不用再走名称/标题匹配
             return true;
         }
 

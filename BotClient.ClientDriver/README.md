@@ -77,8 +77,9 @@ Bot 只负责点地图、按键，节流由游戏自身的行走/攻击冷却天
 | `Sniff/TcpReassembler.cs` | 按四元组重组 TCP 段（乱序 / 重传 / 半包） |
 | `Sniff/PacketSniffer.cs` | SharpPcap 只读抓包，自动选网卡；`ServerIp` 留空时自动跟随客户端连接锁定服务端 |
 | `Sniff/ClientDiscovery.cs` | 零配置识别：读本机 TCP 连接表（iphlpapi）反查「客户端进程名 + 服务端地址」 |
+| `Sniff/WindowBinder.cs` | 窗口句柄绑定（只读）：挑"像游戏本体"的顶层窗口、校验已绑定 HWND 是否仍有效（防句柄复用） |
 | `Sniff/LoginCredentialProbe.cs` | 从客户端自己的登录流量里解出账号密码（会话密钥 + 上行 CM_IDPASSWORD），仅存内存 |
-| `Input/InputSimulator.cs` | SendInput 鼠标键盘、窗口定位、前台校验、人味抖动 |
+| `Input/InputSimulator.cs` | SendInput 鼠标键盘、窗口定位（句柄绑定优先）、前台校验、人味抖动 |
 | `Input/ScreenMapper.cs` | 世界格 ⇄ 屏幕像素（等距 45° 视图 / 小地图 / 背包 / 对话框） |
 | `Input/ActionGate.cs` | 所有点击的唯一入口：串行 + 节流 + 熔断 |
 | `Input/UiStateProbe.cs` | UI 场景态机（自由 / 对话 / 换图加载），拦掉非法点击 |
@@ -140,6 +141,26 @@ Bot 只负责点地图、按键，节流由游戏自身的行走/攻击冷却天
   不影响挂机，只是这次复用不到账号密码；下次登录即会抓到。
 - **只读**：账号密码是从客户端自己发出的包**解**出来的，宿主不注入、不改包、不碰客户端文件。
 - 命令：`--sniff-only`（只嗅探不点击，先验证链路）、`--fight-x N --fight-y N`（定点挂机）。
+
+#### 4.1.1 窗口绑定：PID + 句柄（多开、改分辨率都不怕）
+
+图形界面的「扫描客户端」列表里选定某一条后，会往 `clientdriver.json` 写回**两个**绑定值：
+
+| 字段 | 作用 | 失效条件 |
+| --- | --- | --- |
+| `TargetPid` | 钉住选中的客户端进程（多开时区分实例） | 客户端重启 → PID 变化 |
+| `TargetHwnd` | 钉住选中的**顶层窗口句柄**（HWND），操作通道优先用它 | 窗口关闭 / 客户端重启 |
+
+定位优先级：`TargetHwnd`（校验通过）→ `TargetPid` → `ProcessName` + `WindowTitleKeyword` → 自动评分挑选。
+
+为什么句柄比"按尺寸/标题匹配"稳：分辨率改了、窗口标题变了、切成全屏，HWND 仍指向同一个窗口；
+同名多开时句柄天然分得清。**注意 HWND 会被系统复用**，所以每次使用前都做三重校验
+（`IsWindow` + 归属 PID 与绑定时一致 + 仍可见），任一不满足即判定失效，自动清零并退回 PID → 名称匹配，
+日志里会打 `[窗口] 绑定的句柄 0x… 已失效…`，重扫一次即可重新绑定。
+
+窗口本身也不是 `.NET` 的 `MainWindowHandle` 猜出来的，而是走 `Sniff/WindowBinder.cs`：
+枚举该进程的可见顶层窗口，按"可缩放 / 自绘（几乎无子控件）/ 占屏 ≥50% / 类名像引擎渲染窗"打分挑最像游戏本体的那个
+（判据与分辨率无关，和客户端识别同源）。取消绑定用界面上的「取消 PID/句柄锁定」。
 
 ### 4.2 老路径：宿主自己登录（可选）
 

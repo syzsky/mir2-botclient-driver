@@ -47,9 +47,10 @@ public partial class ClientPickerWindow : Window
         CandidateList.ItemsSource = shown;
 
         int launcherLike = _all.Count(c => !c.LikelyGame);
-        CountText.Text = $"候选 {_all.Count} 条（疑似登录器/未知 {launcherLike} 条）" + (_runner.Driver.TargetPid > 0
-            ? $"（已锁定 pid={_runner.Driver.TargetPid}）"
-            : "（自动挑选）");
+        CountText.Text = $"候选 {_all.Count} 条（疑似登录器/未知 {launcherLike} 条）" +
+            (_runner.Driver.TargetHwnd != 0
+                ? $"（已绑定 句柄=0x{_runner.Driver.TargetHwnd:X} / pid={_runner.Driver.TargetPid}）"
+                : _runner.Driver.TargetPid > 0 ? $"（已锁定 pid={_runner.Driver.TargetPid}，未绑定句柄）" : "（自动挑选）");
 
         if (shown.Count > 0 && CandidateList.SelectedIndex < 0) CandidateList.SelectedIndex = 0;
         if (shown.Count == 0 && _all.Count > 0)
@@ -94,9 +95,9 @@ public partial class ClientPickerWindow : Window
             _warnedPid = cand.Pid;
             var gameLike = _all.Where(c => c.LikelyGame).OrderByDescending(c => c.Score).FirstOrDefault();
             HintText.Text =
-                $"注意：pid={cand.Pid} {cand.ProcessName} 判为「{cand.Kind}」（{cand.PortKind}，窗口 {cand.WindowSize}）。" +
+                $"注意：pid={cand.Pid} {cand.ProcessName} 判为「{cand.Kind}」（{cand.PortKind}，窗口 {cand.HwndText} {cand.WindowSize}）。" +
                 (gameLike != null
-                    ? $"更像游戏本体的是 pid={gameLike.Pid} {gameLike.ProcessName}（窗口 {gameLike.WindowSize}，评分 {gameLike.Score}）。"
+                    ? $"更像游戏本体的是 pid={gameLike.Pid} {gameLike.ProcessName}（句柄 {gameLike.HwndText}，窗口 {gameLike.WindowSize}，评分 {gameLike.Score}）。"
                     : "当前列表里没有更像游戏本体的行——请确认客户端已登录进游戏。") +
                 " 确认仍要跟随这条，请再点一次「选定并跟随」。";
             return;
@@ -152,7 +153,7 @@ public partial class ClientPickerWindow : Window
     {
         if (_busy) return;
         _runner.ClearCandidatePin();
-        HintText.Text = "已取消 PID 锁定，恢复自动识别（重新扫描后按评分挑）。";
+        HintText.Text = "已取消 PID/句柄绑定，恢复自动识别（重新扫描后按评分挑）。";
         Rescan();
     }
 

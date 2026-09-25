@@ -20,6 +20,12 @@ public sealed class ClientCandidate
     public string ProcessName { get; init; } = string.Empty;
     public string WindowTitle { get; init; } = string.Empty;
     public bool HasWindow { get; init; }
+
+    /// <summary>选定的主窗口句柄 HWND（0 = 无窗口）。钉住它即可不受分辨率/标题变化影响地绑定窗口。</summary>
+    public long Hwnd { get; init; }
+
+    /// <summary>句柄的十六进制展示（如 0x001A2B3C），仅用于界面与日志。</summary>
+    public string HwndText => Hwnd != 0 ? $"0x{Hwnd:X}" : "—";
     public string ServerIp { get; init; } = string.Empty;
     public int ServerPort { get; init; }
     public int LocalPort { get; init; }
@@ -63,7 +69,7 @@ public sealed class ClientCandidate
     public override string ToString()
         => $"pid={Pid} {ProcessName} [{Kind}] " +
            (HasWindow
-               ? $"(窗口: \"{WindowTitle}\" {WindowSize} 类={WindowClass} 子控件={ChildCountText}" +
+               ? $"(句柄={HwndText} 窗口: \"{WindowTitle}\" {WindowSize} 类={WindowClass} 子控件={ChildCountText}" +
                  (string.IsNullOrEmpty(RenderModule) ? string.Empty : $" 渲染={RenderModule}") + ")"
                : "(无窗口)") +
            (string.IsNullOrEmpty(ParentName) ? string.Empty : $" 父={ParentName}") +
@@ -494,7 +500,7 @@ internal static class ProcessTree
 ///
 /// 判定思路（从强到弱）：
 ///   ① 配置里已经写了 ProcessName → 只认这个进程的连接；
-///   ② 界面里钉住的 TargetPid → 压倒性优先；
+///   ② 界面里钉住的 TargetHwnd / TargetPid → 压倒性优先（句柄最稳：分辨率与标题变化都不影响）；
 ///   ③ **游戏本体特征（与分辨率无关）**：窗口加载了 ddraw/d3d9/opengl32 等渲染库、窗口可缩放/可最大化
 ///      （主窗口而非固定尺寸小窗）、几乎没有子控件（引擎自绘渲染窗）、面积占所在显示器 ≥50%、
 ///      窗口类名像引擎渲染窗、连接端口不是 HTTP —— 凑够 ≥2 项独立信号才认作游戏本体。
@@ -575,9 +581,15 @@ public static class ClientDiscovery
             {
                 using var p = Process.GetProcessById(pid);
                 name = p.ProcessName;
-                hWnd = p.MainWindowHandle;
+
+                // 句柄绑定：优先挑"像游戏本体"的顶层窗口（可缩放/自绘/占屏过半/类名像引擎渲染窗），
+                // 而不是 .NET 猜的 MainWindowHandle（多窗口进程里它经常指到登录窗体）。
+                hWnd = WindowBinder.PickTopWindow(pid, out _);
+                if (hWnd == IntPtr.Zero) hWnd = p.MainWindowHandle;   // 枚举不到就退回旧行为
+
                 hasWindow = hWnd != IntPtr.Zero;
-                title = hasWindow ? SafeTitle(p) : string.Empty;
+                title = hasWindow ? WindowBinder.TitleOf(hWnd) : string.Empty;
+                if (hasWindow && title.Length == 0) title = SafeTitle(p);
             }
             catch
             {
@@ -654,6 +666,7 @@ public static class ClientDiscovery
 
             int score = 0;
             if (cfg.TargetPid > 0 && pid == cfg.TargetPid) score += 1000;   // 界面里手动选中的那个，最优先
+            if (cfg.TargetHwnd != 0 && hWnd.ToInt64() == cfg.TargetHwnd) score += 2000;   // 句柄绑定命中：最优先（不受分辨率/标题变化影响）
             if (preferConfigured && name.Equals(prefer, StringComparison.OrdinalIgnoreCase)) score += 100;
             else if (preferConfigured && lowerName.Contains(preferLower)) score += 60;
 
@@ -683,6 +696,7 @@ public static class ClientDiscovery
                     Pid = pid,
                     ProcessName = name,
                     HasWindow = hasWindow,
+                    Hwnd = hWnd.ToInt64(),
                     WindowTitle = title,
                     ServerIp = ep.RemoteAddress,
                     ServerPort = ep.RemotePort,
