@@ -13,7 +13,7 @@ namespace BotClientDriverHostUi.Views;
 /// 帧定界自动探测（换引擎/换服时用，全程零点击）。
 ///
 /// 界面自己不做协议判断：候选与"游戏 / 疑似登录器"的类型判定全部来自 ClientDiscovery
-/// （大窗口 + 非 HTTP 端口 + 进程父子关系），这里只负责呈现与筛选。
+/// （渲染窗特征 + 非 HTTP 端口 + 进程父子关系，判据与窗口分辨率无关），这里只负责呈现与筛选。
 /// </summary>
 public partial class ClientPickerWindow : Window
 {

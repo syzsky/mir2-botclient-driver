@@ -34,20 +34,38 @@ public sealed class ClientCandidate
     public int WindowWidth { get; init; }
     public int WindowHeight { get; init; }
 
+    /// <summary>窗口面积 / 所在显示器面积（相对值，不受分辨率影响）。</summary>
+    public double WindowAreaRatio { get; init; }
+
+    /// <summary>可见子控件数量（自绘渲染窗 ≈ 0，登录器窗体一堆）。</summary>
+    public int WindowChildCount { get; init; }
+
+    /// <summary>命中的渲染模块（ddraw/d3d9/opengl32…），为空表示拿不到或未加载。</summary>
+    public string RenderModule { get; init; } = string.Empty;
+
     /// <summary>父进程名（登录器拉起游戏客户端时，这里就是登录器）。</summary>
     public string ParentName { get; init; } = string.Empty;
 
     /// <summary>这条连接的性质：含游戏端口 / 仅HTTP。</summary>
     public string PortKind { get; init; } = string.Empty;
 
-    public string WindowSize => HasWindow && WindowWidth > 0 ? $"{WindowWidth}×{WindowHeight}" : "—";
+    /// <summary>窗口尺寸 + 占屏比例（尺寸仅供参考，判定靠比例与结构特征）。</summary>
+    public string WindowSize => HasWindow && WindowWidth > 0
+        ? $"{WindowWidth}×{WindowHeight} · {(int)Math.Round(WindowAreaRatio * 100)}%"
+        : "—";
 
-    /// <summary>是否"看起来就是游戏本体"：大窗口 + 非 HTTP 连接，且不像登录器。</summary>
+    /// <summary>子控件数量展示：— / 0 / n 个控件。</summary>
+    public string ChildCountText => HasWindow ? (WindowChildCount <= 0 ? "0" : WindowChildCount.ToString()) : "—";
+
+    /// <summary>是否"看起来就是游戏本体"：渲染窗结构 + 非 HTTP 连接，且不像登录器（不看固定分辨率）。</summary>
     public bool LikelyGame => Kind == "游戏";
 
     public override string ToString()
         => $"pid={Pid} {ProcessName} [{Kind}] " +
-           (HasWindow ? $"(窗口: \"{WindowTitle}\" {WindowSize} 类={WindowClass})" : "(无窗口)") +
+           (HasWindow
+               ? $"(窗口: \"{WindowTitle}\" {WindowSize} 类={WindowClass} 子控件={ChildCountText}" +
+                 (string.IsNullOrEmpty(RenderModule) ? string.Empty : $" 渲染={RenderModule}") + ")"
+               : "(无窗口)") +
            (string.IsNullOrEmpty(ParentName) ? string.Empty : $" 父={ParentName}") +
            $" → {ServerIp}:{ServerPort} 本地端口={LocalPort} {PortKind} 评分={Score}";
 }
@@ -165,16 +183,34 @@ public static class TcpTableReader
 }
 
 /// <summary>
-/// 窗口探针（只读）：拿主窗口的类名、尺寸、可见性。
-/// 用途：把「游戏本体窗口」与「登录器/更新器窗口」分开 —— 登录器通常是个小尺寸窗口，
-/// 类名也不是引擎的渲染窗口；游戏客户端窗口一般 1024×720 起步或接近全屏。
+/// 窗口探针（只读）：拿主窗口的类名、尺寸、可见性、窗口样式、子控件数量与所在显示器尺寸。
+///
+/// 关键：**判据必须与分辨率无关** —— 传奇客户端的窗口分辨率不固定（全屏、1920×1080、
+/// 1024×768、800×600，甚至玩到一半改分辨率），所以这里不拿绝对像素当门槛，而是算
+/// 「占所在显示器的比例」和「窗口结构特征」（可缩放/可最大化、几乎没有子控件的自绘渲染窗）。
+/// 登录器/更新器一般是**固定尺寸的普通窗体**（一堆按钮/输入框子控件、不可缩放、占屏很小）。
 /// </summary>
 internal static class WindowProbe
 {
+    public const uint WS_THICKFRAME = 0x00040000;    // 可拖拽边框（可缩放）
+    public const uint WS_MAXIMIZEBOX = 0x00010000;   // 有最大化按钮
+
+    private const int GWL_STYLE = -16;
+    private const uint MONITOR_DEFAULTTONEAREST = 2;
+
     [StructLayout(LayoutKind.Sequential)]
     private struct RECT
     {
         public int Left, Top, Right, Bottom;
+    }
+
+    [StructLayout(LayoutKind.Sequential)]
+    private struct MONITORINFO
+    {
+        public int cbSize;
+        public RECT rcMonitor;
+        public RECT rcWork;
+        public uint dwFlags;
     }
 
     [DllImport("user32.dll", CharSet = CharSet.Unicode)]
@@ -189,40 +225,195 @@ internal static class WindowProbe
     [DllImport("user32.dll")]
     private static extern int GetSystemMetrics(int nIndex);
 
-    public static (string Class, int W, int H, bool Visible) Describe(IntPtr hWnd)
-    {
-        if (hWnd == IntPtr.Zero) return (string.Empty, 0, 0, false);
+    [DllImport("user32.dll")]
+    private static extern IntPtr MonitorFromWindow(IntPtr hWnd, uint dwFlags);
 
-        string cls = string.Empty;
-        int w = 0, h = 0;
-        bool visible = false;
+    [DllImport("user32.dll", CharSet = CharSet.Unicode)]
+    private static extern bool GetMonitorInfoW(IntPtr hMonitor, ref MONITORINFO lpmi);
+
+    [DllImport("user32.dll")]
+    private static extern int GetWindowLong(IntPtr hWnd, int nIndex);
+
+    private delegate bool EnumWindowsProc(IntPtr hWnd, IntPtr lParam);
+
+    [DllImport("user32.dll")]
+    private static extern bool EnumChildWindows(IntPtr hWndParent, EnumWindowsProc lpEnumFunc, IntPtr lParam);
+
+    public static WindowInfo Describe(IntPtr hWnd)
+    {
+        if (hWnd == IntPtr.Zero) return WindowInfo.Empty;
+
         try
         {
             var sb = new StringBuilder(256);
-            if (GetClassName(hWnd, sb, sb.Capacity) > 0) cls = sb.ToString();
+            string cls = GetClassName(hWnd, sb, sb.Capacity) > 0 ? sb.ToString() : string.Empty;
+
+            int w = 0, h = 0;
             if (GetWindowRect(hWnd, out var r))
             {
                 w = Math.Max(0, r.Right - r.Left);
                 h = Math.Max(0, r.Bottom - r.Top);
             }
-            visible = IsWindowVisible(hWnd);
+
+            bool visible = IsWindowVisible(hWnd);
+            uint style = unchecked((uint)GetWindowLong(hWnd, GWL_STYLE));
+
+            // 所在显示器尺寸（多屏时用窗口自己那块屏，而不是主屏）
+            int sw = 0, sh = 0;
+            IntPtr mon = MonitorFromWindow(hWnd, MONITOR_DEFAULTTONEAREST);
+            if (mon != IntPtr.Zero)
+            {
+                var mi = new MONITORINFO { cbSize = Marshal.SizeOf<MONITORINFO>() };
+                if (GetMonitorInfoW(mon, ref mi))
+                {
+                    sw = Math.Max(0, mi.rcMonitor.Right - mi.rcMonitor.Left);
+                    sh = Math.Max(0, mi.rcMonitor.Bottom - mi.rcMonitor.Top);
+                }
+            }
+            if (sw <= 0 || sh <= 0) { sw = GetSystemMetrics(0); sh = GetSystemMetrics(1); }
+
+            // 可见子控件数量：自绘渲染窗几乎为 0，登录器窗体通常一堆按钮/输入框
+            int children = 0;
+            try
+            {
+                EnumChildWindows(hWnd, (ch, _) =>
+                {
+                    try { if (IsWindowVisible(ch)) children++; } catch { }
+                    return true;
+                }, IntPtr.Zero);
+            }
+            catch { }
+
+            double ratio = (sw > 0 && sh > 0) ? (double)w * h / ((double)sw * sh) : 0;
+            return new WindowInfo(cls, w, h, visible, style, ratio, children, sw, sh);
         }
         catch
         {
             // 窗口已销毁 / 跨会话无权限：按"无信息"处理，不影响其它判据
+            return WindowInfo.Empty;
         }
+    }
+}
 
-        return (cls, w, h, visible);
+/// <summary>窗口信息快照。所有判定都基于比例与结构，不依赖固定分辨率。</summary>
+internal sealed class WindowInfo
+{
+    public static readonly WindowInfo Empty = new(string.Empty, 0, 0, false, 0, 0, 0, 0, 0);
+
+    public WindowInfo(string cls, int w, int h, bool visible, uint style, double areaRatio,
+                      int childCount, int screenW, int screenH)
+    {
+        Class = cls;
+        W = w;
+        H = h;
+        Visible = visible;
+        Style = style;
+        AreaRatio = areaRatio;
+        ChildCount = childCount;
+        ScreenW = screenW;
+        ScreenH = screenH;
     }
 
-    /// <summary>判定"像游戏本体的大窗口"：≥1024×720，且面积达主屏 1/4 以上（取不到屏幕尺寸时只看绝对尺寸）。</summary>
-    public static bool IsBigWindow(int w, int h)
-    {
-        if (w < 1024 || h < 720) return false;
+    public string Class { get; }
+    public int W { get; }
+    public int H { get; }
+    public bool Visible { get; }
+    public uint Style { get; }
 
-        int sw = GetSystemMetrics(0), sh = GetSystemMetrics(1);
-        if (sw <= 0 || sh <= 0) return true;
-        return (long)w * h >= (long)sw * sh / 4;
+    /// <summary>窗口面积 / 所在显示器面积。</summary>
+    public double AreaRatio { get; }
+
+    /// <summary>可见子控件数量。</summary>
+    public int ChildCount { get; }
+
+    public int ScreenW { get; }
+    public int ScreenH { get; }
+
+    /// <summary>可拖拽边框或有最大化按钮 —— 主窗口特征；固定尺寸小窗（登录器）通常都没有。</summary>
+    public bool Sizeable => (Style & WindowProbe.WS_THICKFRAME) != 0 || (Style & WindowProbe.WS_MAXIMIZEBOX) != 0;
+
+    /// <summary>自绘渲染窗特征：几乎没有可见子控件。</summary>
+    public bool SelfDrawn => W > 0 && ChildCount <= 2;
+
+    /// <summary>占屏过半（窗口化大窗或准全屏）。</summary>
+    public bool Covers => AreaRatio >= 0.5;
+
+    /// <summary>准全屏（≥85% 屏幕）。</summary>
+    public bool NearlyFullscreen => AreaRatio >= 0.85;
+
+    /// <summary>小工具窗：<br/>400×300 以下或占屏不到 12%。</summary>
+    public bool Tiny => W > 0 && (W < 400 || H < 300 || AreaRatio < 0.12);
+
+    public string SizeText => W > 0 ? $"{W}×{H} · {(int)Math.Round(AreaRatio * 100)}%" : "—";
+}
+
+/// <summary>
+/// 模块探针（只读）：看该进程是否加载了 DirectDraw / Direct3D / OpenGL 等渲染库 —— 这是
+/// **与分辨率无关**的硬信号：传奇客户端本体（各引擎）几乎都会加载 ddraw/d3d9 之类，
+/// 登录器/更新器一般是普通 GDI 窗体，不加载。
+/// 注意 64 位宿主枚举 32 位（WOW64）目标时拿不到对方的 32 位模块，此时返回空串，
+/// 调用方按"无信息"处理（只做加分，绝不因为拿不到就扣分）。
+/// </summary>
+internal static class ModuleProbe
+{
+    private const uint PROCESS_QUERY_INFORMATION = 0x0400;
+    private const uint PROCESS_VM_READ = 0x0010;
+
+    private static readonly string[] RenderModules =
+    {
+        "ddraw", "d3d8", "d3d9", "d3d10", "d3d11", "d3d12", "dxgi", "opengl32", "glide", "d3dim",
+    };
+
+    [DllImport("kernel32.dll", SetLastError = true)]
+    private static extern IntPtr OpenProcess(uint dwDesiredAccess, bool bInheritHandle, int dwProcessId);
+
+    [DllImport("kernel32.dll")]
+    private static extern bool CloseHandle(IntPtr hObject);
+
+    [DllImport("psapi.dll", SetLastError = true)]
+    private static extern bool EnumProcessModules(IntPtr hProcess, [Out] IntPtr[] lphModule, int cb, out int lpcbNeeded);
+
+    [DllImport("psapi.dll", CharSet = CharSet.Unicode)]
+    private static extern int GetModuleBaseNameW(IntPtr hProcess, IntPtr hModule, StringBuilder lpBaseName, int nSize);
+
+    /// <summary>命中的渲染模块名（如 ddraw.dll）；无命中或取不到时返回空串。</summary>
+    public static string RenderModule(int pid)
+    {
+        if (!OperatingSystem.IsWindows()) return string.Empty;
+
+        IntPtr h = IntPtr.Zero;
+        try
+        {
+            h = OpenProcess(PROCESS_QUERY_INFORMATION | PROCESS_VM_READ, false, pid);
+            if (h == IntPtr.Zero) return string.Empty;
+
+            var mods = new IntPtr[1024];
+            if (!EnumProcessModules(h, mods, mods.Length * IntPtr.Size, out int needed)) return string.Empty;
+
+            int count = Math.Min(needed / IntPtr.Size, mods.Length);
+            var sb = new StringBuilder(260);
+            for (int i = 0; i < count; i++)
+            {
+                sb.Clear();
+                if (GetModuleBaseNameW(h, mods[i], sb, sb.Capacity) <= 0) continue;
+
+                string mod = sb.ToString().ToLowerInvariant();
+                foreach (string r in RenderModules)
+                {
+                    if (mod.Contains(r)) return mod;
+                }
+            }
+        }
+        catch
+        {
+            // 权限不足 / 位数不一致：按"无信息"处理
+        }
+        finally
+        {
+            if (h != IntPtr.Zero) CloseHandle(h);
+        }
+
+        return string.Empty;
     }
 }
 
@@ -304,8 +495,10 @@ internal static class ProcessTree
 /// 判定思路（从强到弱）：
 ///   ① 配置里已经写了 ProcessName → 只认这个进程的连接；
 ///   ② 界面里钉住的 TargetPid → 压倒性优先；
-///   ③ **游戏本体特征**：有可见的"大窗口"（≥1024×720 且占屏 1/4 以上）、窗口类名像引擎渲染窗、
-///      连接端口不是 HTTP —— 三条里凑得越多越像游戏；
+///   ③ **游戏本体特征（与分辨率无关）**：窗口加载了 ddraw/d3d9/opengl32 等渲染库、窗口可缩放/可最大化
+///      （主窗口而非固定尺寸小窗）、几乎没有子控件（引擎自绘渲染窗）、面积占所在显示器 ≥50%、
+///      窗口类名像引擎渲染窗、连接端口不是 HTTP —— 凑够 ≥2 项独立信号才认作游戏本体。
+///      注意：**不拿固定分辨率当门槛**，游戏窗口可能是全屏，也可能 800×600 或玩到一半改尺寸；
 ///   ④ **登录器特征**：进程名/窗口标题/窗口类里出现「登录器 / launcher / update / 补丁」等字眼，
 ///      或该进程**只有 HTTP(S) 连接**（登录器、更新器走 Web；游戏本体走自有 TCP 网关端口）；
 ///      命中则降权并标成"疑似登录器"；由登录器**拉起**的子进程（父进程像登录器）反而加权，因为那才是游戏本体。
@@ -401,10 +594,10 @@ public static class ClientDiscovery
             }
             if (remote.Count == 0) continue;
 
-            // ---- 窗口侧：大窗口 + 窗口类，用来区分游戏本体窗口与登录器小窗 ----
-            var (winClass, winW, winH, winVisible) = hasWindow
-                ? WindowProbe.Describe(hWnd)
-                : (string.Empty, 0, 0, false);
+            // ---- 窗口侧：拿窗口结构特征（可缩放/子控件数/占屏比例）与渲染模块 ----
+            // 判据与分辨率无关：游戏窗口分辨率不固定（全屏~800×600 皆可能），不看绝对像素
+            WindowInfo win = hasWindow ? WindowProbe.Describe(hWnd) : WindowInfo.Empty;
+            string renderModule = ModuleProbe.RenderModule(pid);
 
             // ---- 进程侧：父进程名（登录器拉起的那个才是游戏本体）----
             string parentName = string.Empty;
@@ -418,7 +611,7 @@ public static class ClientDiscovery
 
             string lowerName = name.ToLowerInvariant();
             string lowerTitle = title.ToLowerInvariant();
-            string lowerClass = winClass.ToLowerInvariant();
+            string lowerClass = win.Class.ToLowerInvariant();
             string lowerParent = parentName.ToLowerInvariant();
 
             // ---- 连接侧：是自有 TCP 网关端口，还是只有 Web（HTTP/HTTPS）连接 ----
@@ -430,17 +623,30 @@ public static class ClientDiscovery
                 lowerName.Contains(w) || lowerTitle.Contains(w) || lowerClass.Contains(w));
             bool parentLauncher = LauncherWords.Any(w => lowerParent.Contains(w));
 
-            // ---- 游戏本体特征 ----
-            bool bigWindow = hasWindow && winVisible && WindowProbe.IsBigWindow(winW, winH);
+            // ---- 游戏本体特征（全部与分辨率无关）----
+            bool winUsable = hasWindow && win.Visible;
+            bool hasRender = renderModule.Length > 0;         // 加载了 ddraw/d3d9/opengl32 等渲染库
+            bool sizeable = win.Sizeable;                     // 可缩放/可最大化：主窗口，登录器多为固定尺寸小窗
+            bool selfDrawn = win.SelfDrawn;                   // 几乎无子控件：引擎自绘渲染窗
+            bool covers = win.Covers;                         // 占屏 ≥50%
+            bool tiny = win.Tiny;                             // 占屏 <12% 或 <400×300：小工具/启动器
             bool nameLikeGame = HintWords.Any(h => lowerName.Contains(h));
             bool titleLikeGame = HintWords.Any(h => lowerTitle.Contains(h));
             bool classLikeGame = EngineClassWords.Any(w => lowerClass.Contains(w));
 
-            bool likelyGame = !launcherWord &&
-                              ((bigWindow && anyGamePort) ||
-                               (bigWindow && (nameLikeGame || classLikeGame)) ||
-                               (nameLikeGame && anyGamePort && hasWindow) ||
-                               (classLikeGame && anyGamePort));
+            // 至少两项独立信号才认作游戏本体，避免"随便一个联网的有窗口程序"被误判
+            int gameSignals = 0;
+            if (hasRender) gameSignals += 2;
+            if (anyGamePort) gameSignals++;
+            if (sizeable) gameSignals++;
+            if (selfDrawn && winUsable) gameSignals++;
+            if (covers) gameSignals++;
+            if (classLikeGame) gameSignals++;
+            if (nameLikeGame) gameSignals++;
+            if (titleLikeGame) gameSignals++;
+            if (parentLauncher) gameSignals++;
+
+            bool likelyGame = !launcherWord && winUsable && anyGamePort && gameSignals >= 2;
 
             string kind = likelyGame
                 ? "游戏"
@@ -451,15 +657,18 @@ public static class ClientDiscovery
             if (preferConfigured && name.Equals(prefer, StringComparison.OrdinalIgnoreCase)) score += 100;
             else if (preferConfigured && lowerName.Contains(preferLower)) score += 60;
 
-            if (nameLikeGame) score += 50;
             if (hasWindow) score += 25;
             if (titleLikeGame) score += 25;
+            if (nameLikeGame) score += 50;
 
             // 游戏本体优先；登录器/更新器压下去，自动挑选时不会再选错
             if (likelyGame) score += 120;
-            if (bigWindow) score += 60;
-            if (hasWindow && !bigWindow) score -= 20;      // 小窗口更像登录器/工具窗
+            if (hasRender) score += 80;                    // 与分辨率无关的硬信号
+            if (sizeable) score += 25;
+            if (selfDrawn && winUsable) score += 25;
+            if (covers) score += win.NearlyFullscreen ? 50 : 30;   // 相对屏幕占比，而非固定像素
             if (classLikeGame) score += 30;
+            if (tiny) score -= 30;                         // 小工具窗/启动器（相对判据）
             score += anyGamePort ? 40 : -80;               // 只有 Web 连接 → 登录器/更新器特征
             if (launcherWord) score -= 90;
             if (parentLauncher) score += 30;               // 由登录器拉起 → 更像游戏本体
@@ -480,9 +689,12 @@ public static class ClientDiscovery
                     LocalPort = ep.LocalPort,
                     Score = score,
                     Kind = kind,
-                    WindowClass = winClass,
-                    WindowWidth = winW,
-                    WindowHeight = winH,
+                    WindowClass = win.Class,
+                    WindowWidth = win.W,
+                    WindowHeight = win.H,
+                    WindowAreaRatio = win.AreaRatio,
+                    WindowChildCount = win.ChildCount,
+                    RenderModule = renderModule,
                     ParentName = parentName,
                     PortKind = portKind,
                 });

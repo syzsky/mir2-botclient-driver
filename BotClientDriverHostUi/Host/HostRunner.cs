@@ -435,8 +435,8 @@ public sealed class HostRunner
             var best = cands.FirstOrDefault();
             if (best != null) Emit($"[扫描] 建议跟随：{best}");
             if (cands.Count > 0 && gameLike == 0)
-                Emit("[扫描] 注意：没有一行像『游戏本体』（大窗口 + 非 HTTP 端口）——列表里多为登录器/更新器的 " +
-                     "HTTP 连接或小工具窗。请把游戏客户端启动并**登录进游戏**后再点「重新扫描」。");
+                Emit("[扫描] 注意：没有一行像『游戏本体』（渲染窗特征 + 非 HTTP 端口）——列表里多为登录器/更新器的 " +
+                     "HTTP 连接或小工具窗。请把游戏客户端启动并**登录进游戏**后再点「重新扫描」。（判据与分辨率无关，全屏/800×600 都能认出）");
 
             return cands;
         }
@@ -461,7 +461,7 @@ public sealed class HostRunner
              (cand.HasWindow ? $"｜窗口=\"{cand.WindowTitle}\" {cand.WindowSize}" : "｜（无可见窗口）"));
         if (!cand.LikelyGame)
             Emit($"[选择] 注意：这条判为「{cand.Kind}」（{cand.PortKind}）——若随后抓不到游戏流量，" +
-                 "请重新扫描并选『类型=游戏』那一条（大窗口 + 非 HTTP 端口）。");
+                 "请重新扫描并选『类型=游戏』那一条（渲染窗特征 + 非 HTTP 端口）。");
 
         try
         {
