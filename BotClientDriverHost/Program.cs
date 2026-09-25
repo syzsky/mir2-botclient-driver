@@ -62,22 +62,6 @@ internal static class Program
         }
 
         var settings = HostSettings.Load(settingsPath);
-        string account = cli.Account ?? settings.Account;
-        string password = cli.Password
-                          ?? Environment.GetEnvironmentVariable("BOT_PASSWORD")
-                          ?? string.Empty;
-
-        if (string.IsNullOrWhiteSpace(account))
-        {
-            Console.Error.WriteLine("[host] 缺少账号：用 --account，或在 botsettings.json 里填 Account");
-            return 2;
-        }
-
-        if (string.IsNullOrWhiteSpace(password))
-        {
-            Console.Error.WriteLine("[host] 缺少密码：用 --password，或设环境变量 BOT_PASSWORD（不落盘，推荐后者）");
-            return 2;
-        }
 
         ClientDriverConfig cfg;
         try
@@ -90,14 +74,41 @@ internal static class Program
             return 1;
         }
 
-        if (string.IsNullOrWhiteSpace(cfg.ServerIp))
-        {
-            cfg.ServerIp = settings.Host;
-        }
+        // 有账号（命令行或 --login）→ 老路径：宿主自己直连登录后接管。
+        // 没有任何账号信息 → 默认走"复用模式"：不登录，一切从你自己的客户端登录过程里取。
+        bool directLogin = cli.Login || !string.IsNullOrWhiteSpace(cli.Account);
 
         try
         {
-            return await RunAsync(cli, settings, cfg, account, password, Shutdown.Token);
+            if (directLogin)
+            {
+                string account = cli.Account ?? settings.Account;
+                string password = cli.Password
+                                  ?? Environment.GetEnvironmentVariable("BOT_PASSWORD")
+                                  ?? string.Empty;
+
+                if (string.IsNullOrWhiteSpace(account))
+                {
+                    Console.Error.WriteLine("[host] 缺少账号：用 --account，或在 botsettings.json 里填 Account");
+                    return 2;
+                }
+
+                if (string.IsNullOrWhiteSpace(password))
+                {
+                    Console.Error.WriteLine("[host] 缺少密码：用 --password，或设环境变量 BOT_PASSWORD（不落盘，推荐后者）");
+                    return 2;
+                }
+
+                if (string.IsNullOrWhiteSpace(cfg.ServerIp))
+                {
+                    cfg.ServerIp = settings.Host;
+                }
+
+                return await RunAsync(cli, settings, cfg, account, password, Shutdown.Token);
+            }
+
+            Say("[host] 复用模式（零配置）：不自己登录 —— 账号、密码、服务端地址全部取自你自己的客户端登录过程");
+            return await RunReuseAsync(cli, settings, cfg, driverPath, Shutdown.Token);
         }
         catch (OperationCanceledException)
         {
@@ -109,6 +120,102 @@ internal static class Program
             Console.Error.WriteLine($"[host] 运行失败: {ex.Message}");
             return 1;
         }
+    }
+
+    /// <summary>
+    /// 复用模式：宿主**不登录、不碰账号**，只做三件事：
+    ///   ① 认出哪个进程是客户端（进程名 / 窗口）；
+    ///   ② 跟随该客户端真实的服务端连接（ServerIp 与端口无需手填）；
+    ///   ③ 从客户端自己的登录包里还原账号密码（用户下一次点"登录"时抓到，仅存内存）。
+    /// 用户侧唯一要做的事：打开客户端 → 登录 → 创建/选择角色。
+    /// </summary>
+    private static async Task<int> RunReuseAsync(Cli cli, HostSettings settings, ClientDriverConfig cfg,
+        string driverPath, CancellationToken ct)
+    {
+        var session = new BotSession();
+        var runtime = new BotRuntime(session);
+
+        runtime.Log += m => Say("[runtime] " + m);
+        runtime.SystemMessage += m => Say("[系统] " + m);
+        runtime.MapChanged += () =>
+            Say($"[地图] {runtime.CurrentMap}｜{runtime.Player.MapName}｜({runtime.Player.PosX},{runtime.Player.PosY})");
+        runtime.Died += () => Say("[危险] 角色死亡");
+        runtime.LevelUp += lv => Say($"[成长] 等级 → {lv}");
+        runtime.StartReceiveLoop(ct);
+
+        var host = new ClientDriverHost(cfg);
+        host.Log += Say;
+
+        Say("[host] 自动识别客户端进程与服务端地址…");
+        if (host.AutoConfigure())
+        {
+            try
+            {
+                cfg.Save(driverPath);
+                Say($"[host] 识别结果已写回 {driverPath}（下次启动可直接复用，仍可留空）");
+            }
+            catch (Exception ex)
+            {
+                Say($"[host] 写回配置失败（不影响本次运行）: {ex.Message}");
+            }
+        }
+        else if (!string.IsNullOrWhiteSpace(settings.Host))
+        {
+            cfg.ServerIp = settings.Host;
+            Say($"[host] 自动识别未命中，退回 botsettings.json 的 Host={settings.Host}");
+        }
+
+        host.Credentials.Captured += cred =>
+            Say($"[host] 已复用客户端登录凭据：{cred.Describe()}（仅存内存，不写入任何文件）");
+
+        host.Attach(new Attachment(session, runtime));
+        runtime.NpcMessage += (id, text) => host.FeedNpcDialog(id, text);
+        runtime.SystemMessage += text => host.FeedSystemMessage(text);
+        host.StartSniffing();
+
+        Say(host.SelfCheck());
+
+        if (host.Credentials.Latest == null)
+        {
+            Say("[host] 提示：账号密码在你**下一次点登录**（含掉线重连、切角色回登录界面）时抓取；" +
+                "本次若已是登录状态，不影响挂机，只是这次拿不到历史登录包。");
+        }
+
+        var ai = new BotCombatAI(session, runtime);
+        settings.ApplyTo(ai);
+        ai.Log += m => Say("[ai] " + m);
+        if (cli.FightPointX >= 0 && cli.FightPointY >= 0)
+        {
+            ai.FightAtPoint = true;
+            ai.FightPointX = cli.FightPointX;
+            ai.FightPointY = cli.FightPointY;
+            Say($"[host] 定点挂机: ({cli.FightPointX},{cli.FightPointY})");
+        }
+
+        if (cli.SniffOnly)
+        {
+            Say("[host] --sniff-only：只做嗅探与状态镜像，不产生任何点击（用于先验证抓包链路）");
+        }
+        else
+        {
+            ai.Start();
+            Say("[host] AI 已启动（坐标/地图由客户端真实封包提供）；Ctrl+C 退出");
+        }
+
+        try
+        {
+            await Task.Delay(Timeout.Infinite, ct);
+        }
+        catch (OperationCanceledException)
+        {
+            // 正常退出路径
+        }
+
+        ai.Stop();
+        await host.DisposeAsync();
+        await session.DisposeAsync();
+        Say("[host] 已退出");
+        return 0;
     }
 
     private static async Task<int> RunAsync(Cli cli, HostSettings settings, ClientDriverConfig cfg,
@@ -290,6 +397,9 @@ internal sealed class Cli
 
     public bool SniffOnly { get; private set; }
 
+    /// <summary>强制走"宿主自己直连登录"的老路径（需要账号密码）。</summary>
+    public bool Login { get; private set; }
+
     public bool ShowHelp { get; private set; }
 
     public int FightPointX { get; private set; } = -1;
@@ -349,6 +459,10 @@ internal sealed class Cli
                 case "--sniff-only":
                     cli.SniffOnly = true;
                     break;
+                case "--login":
+                case "--direct":
+                    cli.Login = true;
+                    break;
                 default:
                     throw new ArgumentException($"未知参数: {arg}");
             }
@@ -365,11 +479,19 @@ internal sealed class Cli
             用法:
               BotClientDriverHost.exe [选项]
 
-            连接与登录:
-              --account <账号>        账号（缺省取 botsettings.json 的 Account）
+            默认（复用模式，推荐）:
+              你只要自己打开官方客户端 → 登录 → 创建/进入角色，然后运行本程序即可。
+              不需要填账号、密码、服务端 IP、进程名 —— 宿主会自动：
+                · 认出正在运行的客户端进程（ProcessName）
+                · 跟随它对服务端的真实 TCP 连接（ServerIp / 端口）
+                · 从客户端自己的登录包里还原账号密码（你下一次点"登录"时抓到，仅存内存）
+
+            可选（老路径，宿主自己登录）:
+              --login                 强制宿主直连登录（等价于显式提供了账号）
+              --account <账号>        账号（提供即视为走老路径）
               --password <密码>       密码（建议改用环境变量 BOT_PASSWORD，避免落进命令行历史）
-              --server <区服名>       区服（缺省取 botsettings.json 的 ServerName，再缺省取服务端第一个）
-              --character <角色名>    角色（缺省取 botsettings.json 的 CharacterName，再缺省取列表第一个）
+              --server <区服名>       区服（老路径用；缺省取 botsettings.json 的 ServerName，再缺省取第一个）
+              --character <角色名>    角色（老路径用；缺省取 botsettings.json 的 CharacterName，再缺省取第一个）
 
             文件:
               --settings <路径>       botsettings.json 路径（缺省为 exe 同目录）
@@ -385,7 +507,7 @@ internal sealed class Cli
             运行前提:
               1) 以管理员身份运行（manifest 已声明 requireAdministrator）
               2) 已安装 Npcap（安装时勾选 WinPcap 兼容模式）
-              3) 游戏客户端已启动并进入游戏（本宿主不改客户端文件）
+              3) 游戏客户端已启动并登录（本宿主不改客户端文件、不改 IP、不介入连接）
             """);
     }
 }

@@ -34,6 +34,14 @@ BotRuntime（原样不动）→ IClientDriver → 鼠标/键盘 → 真机客户
 `.github/workflows/build-win-x64.yml`：在 GitHub Actions（windows-latest）上还原 → 编译 → 发布
 win-x64 自包含单文件，产物以 artifact 形式提供。
 
+**也可以本地直接出 exe**（Linux/macOS 交叉编译同样可行）：
+
+```bash
+dotnet publish BotClientDriverHost/BotClientDriverHost.csproj -r win-x64 -c Release \
+  -p:EnableWindowsTargeting=true -o publish
+# → publish/BotClientDriverHost.exe（约 35 MB，单文件自包含）
+```
+
 ## 本地运行前提
 
 1. **管理员权限**（抓包与模拟输入都需要；manifest 已声明 `requireAdministrator`）
@@ -42,6 +50,24 @@ win-x64 自包含单文件，产物以 artifact 形式提供。
 4. 首次运行先校准：`BotClientDriverHost.exe --calibrate`
 
 ## 用法
+
+### 推荐：零配置复用模式（默认）
+
+**账号、密码、服务端地址、客户端进程名全部自动获取**，你只需要打开客户端登录、创建角色：
+
+```powershell
+# 什么都不用填，直接以管理员身份运行
+.\BotClientDriverHost.exe
+
+# 想先只验证链路（不产生任何点击）
+.\BotClientDriverHost.exe --sniff-only
+```
+
+宿主会自动认出客户端进程、跟随它对服务端的真实连接，并从客户端**自己发出的登录包**里
+还原账号密码（**只解不注入、仅存内存、不落盘**）。详见
+[`BotClient.ClientDriver/README.md`](BotClient.ClientDriver/README.md) 第 4.1 节。
+
+### 可选：宿主自己登录（需显式指定账号）
 
 ```powershell
 # 先只验证抓包与状态镜像，不产生任何点击

@@ -17,7 +17,6 @@ public sealed class TcpReassembler
     private readonly SortedDictionary<uint, byte[]> _pending = new();
     private uint _nextExpected;
     private bool _started;
-    private bool _synSeen;
 
     /// <summary>丢掉的字节数（重传/超限/无 SYN 起流），用于诊断。</summary>
     public long DroppedBytes { get; private set; }
@@ -32,7 +31,6 @@ public sealed class TcpReassembler
     public void OnSyn(uint seq)
     {
         if (_started) return;
-        _synSeen = true;
         _nextExpected = unchecked(seq + 1);   // SYN 占 1 个序号
     }
 

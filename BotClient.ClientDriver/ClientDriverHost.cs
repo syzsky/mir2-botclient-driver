@@ -78,6 +78,7 @@ public sealed class ClientDriverHost : IAsyncDisposable
         Ui = new UiStateProbe(CmdCatalog);
         Upstream = new UpstreamCommandProbe();
         Bridge = new ClientInputBridge();
+        Credentials = new LoginCredentialProbe();
 
         _walk = new MapWalkController(config, Mapper, Input, Gate, Ui, () => PlayerPos);
         _driver = new ClientActionDriver(config, Mapper, Input, Gate, Ui, _walk, Upstream, CmdCatalog, () => PlayerPos);
@@ -105,6 +106,13 @@ public sealed class ClientDriverHost : IAsyncDisposable
     public UpstreamCommandProbe Upstream { get; }
     public ClientInputBridge Bridge { get; }
     public NpcTransferRunner Transfer { get; }
+
+    /// <summary>
+    /// 客户端登录凭据嗅探器：账号/密码由玩家自己在客户端登录时产生，
+    /// 本模块只从**客户端自己的上行登录包**里还原，不需要用户手填、也不会让 Bot 再登录一次。
+    /// 事件：<see cref="LoginCredentialProbe.Captured"/>；最近一次结果：<see cref="LoginCredentialProbe.Latest"/>。
+    /// </summary>
+    public LoginCredentialProbe Credentials { get; }
 
     /// <summary>MapInfo.txt（地图代码 ↔ 中文地名）。读不到为 null：进图判定退化为探测式。</summary>
     public MapInfoFile? MapInfo { get; }
@@ -195,15 +203,90 @@ public sealed class ClientDriverHost : IAsyncDisposable
         ValidateCalibration();
     }
 
+    // ---------------------------------------------------------------- 零配置自动识别
+
+    /// <summary>
+    /// 自动识别"用户在玩哪个客户端、它连的是哪个服务端"，并把结果写回 <see cref="Config"/>。
+    ///
+    /// 触发时机：客户端**已经启动并登录进游戏**之后（哪怕刚连上登录服也够）。
+    /// 取值优先级：进程名（能唯一命中就取最强候选）→ 该进程当前已建立的外部连接（服务端 IP/端口）。
+    ///
+    /// <paramref name="overwrite"/> = false 时只填"空着的项"，人工填过的值不会被抹掉。
+    /// 持久化由宿主负责（本类不知道配置文件路径）：识别成功后宿主自行 <c>Config.Save(path)</c>。
+    /// </summary>
+    public bool AutoConfigure(bool overwrite = false)
+    {
+        var cands = ClientDiscovery.Discover(Config, 5);
+        if (cands.Count == 0)
+        {
+            Log?.Invoke("[host] 自动识别失败：没找到像游戏客户端的进程连接。" +
+                        "请确认客户端已启动、并已点过登录（此时才有到服务端的 TCP 连接）。");
+            return false;
+        }
+
+        var best = cands[0];
+        bool changed = false;
+
+        if (overwrite || string.IsNullOrWhiteSpace(Config.ProcessName) || Config.ProcessName == "MirClient")
+        {
+            if (!string.Equals(Config.ProcessName, best.ProcessName, StringComparison.Ordinal))
+            {
+                Config.ProcessName = best.ProcessName;
+                changed = true;
+            }
+        }
+
+        if (!string.IsNullOrWhiteSpace(best.ServerIp) &&
+            (overwrite || string.IsNullOrWhiteSpace(Config.ServerIp)))
+        {
+            Config.ServerIp = best.ServerIp;
+            changed = true;
+        }
+
+        Log?.Invoke($"[host] 自动识别客户端：进程={Config.ProcessName}(pid={best.Pid}) " +
+                    $"服务端={Config.ServerIp}:{best.ServerPort} " +
+                    (best.HasWindow ? $"窗口=\"{best.WindowTitle}\"" : "（无可见窗口）"));
+
+        if (cands.Count > 1)
+        {
+            var others = cands.Skip(1).Take(3).Select(c => $"{c.ProcessName}→{c.ServerIp}:{c.ServerPort}");
+            Log?.Invoke("[host] 其他候选（若上面挑错了，可在 clientdriver.json 显式指定 ProcessName）：" +
+                        string.Join("；", others));
+        }
+
+        return changed;
+    }
+
+    /// <summary>只打印候选，不改配置 —— 排查"为什么识别不到/识别错"时用。</summary>
+    public void DumpClientCandidates()
+    {
+        var cands = ClientDiscovery.Discover(Config, 8);
+        if (cands.Count == 0)
+        {
+            Log?.Invoke("[host] 候选为空：没有任何进程持有外部 TCP 连接。");
+            return;
+        }
+        Log?.Invoke("[host] 客户端候选：" + Environment.NewLine +
+                    string.Join(Environment.NewLine, cands.Select((c, i) => $"  {i + 1}. {c}")));
+    }
+
     /// <summary>启动只读抓包。需要管理员权限 + 已安装 Npcap。</summary>
     public void StartSniffing()
     {
         if (_attachment == null)
             throw new InvalidOperationException("请先调用 Attach()。");
 
+        // ServerIp 留空时，先尽量把进程名认出来（认不出也照跑：抓包侧会自行跟随连接）
+        if (string.IsNullOrWhiteSpace(Config.ServerIp) || string.IsNullOrWhiteSpace(Config.ProcessName))
+            AutoConfigure();
+
+        Credentials.Log += m => Log?.Invoke(m);
+
         _sniffer = new PacketSniffer(Config);
         _sniffer.Log += m => Log?.Invoke(m);
         _sniffer.BytesArrived += OnBytes;
+        _sniffer.ServerEndpointLocked += (ip, port) =>
+            Log?.Invoke($"[host] 服务端地址已自动锁定 {ip}:{port}（可留空，宿主每次自行识别）");
         _sniffer.Start();
     }
 
@@ -226,6 +309,11 @@ public sealed class ClientDriverHost : IAsyncDisposable
         string key = FlowKey(flow);
         try
         {
+            // 登录段流量不参与状态注入，但它正是"账号密码从哪来"的答案：
+            // 客户端自己发出的 CM_IDPASSWORD 上行 + 服务端下发的会话密钥，两边一起喂给凭据嗅探器。
+            if (flow.Gate != MirGateMode.RunGate)
+                Credentials.Feed(key, flow.Gate, dir, data);
+
             if (dir == FlowDirection.Downstream)
             {
                 var codec = GetDownCodec(key, flow.Gate);

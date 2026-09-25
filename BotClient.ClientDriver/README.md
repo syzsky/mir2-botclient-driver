@@ -58,7 +58,9 @@ Bot 只负责点地图、按键，节流由游戏自身的行走/攻击冷却天
 | `CalibrationTool.cs` | 校准辅助工具（控制台，量屏幕坐标） |
 | `Sniff/MirFrameCodec.cs` | 帧切分（三网关）+ 上行命令探针 |
 | `Sniff/TcpReassembler.cs` | 按四元组重组 TCP 段（乱序 / 重传 / 半包） |
-| `Sniff/PacketSniffer.cs` | SharpPcap 只读抓包，自动选网卡，按端口判定网关 |
+| `Sniff/PacketSniffer.cs` | SharpPcap 只读抓包，自动选网卡；`ServerIp` 留空时自动跟随客户端连接锁定服务端 |
+| `Sniff/ClientDiscovery.cs` | 零配置识别：读本机 TCP 连接表（iphlpapi）反查「客户端进程名 + 服务端地址」 |
+| `Sniff/LoginCredentialProbe.cs` | 从客户端自己的登录流量里解出账号密码（会话密钥 + 上行 CM_IDPASSWORD），仅存内存 |
 | `Input/InputSimulator.cs` | SendInput 鼠标键盘、窗口定位、前台校验、人味抖动 |
 | `Input/ScreenMapper.cs` | 世界格 ⇄ 屏幕像素（等距 45° 视图 / 小地图 / 背包 / 对话框） |
 | `Input/ActionGate.cs` | 所有点击的唯一入口：串行 + 节流 + 熔断 |
@@ -75,14 +77,59 @@ Bot 只负责点地图、按键，节流由游戏自身的行走/攻击冷却天
 
 1. **Npcap** 已安装（WinPcap 兼容模式勾选）；
 2. 以**管理员**身份运行（抓包需要）；
-3. `clientdriver.json` 里的 `ServerIp` 填游戏服务器地址；
-4. 已按 `CorePatch.md` 完成 Core 的 3 处改造；
-5. 游戏客户端已登录、角色已站到地图上（本模块**不负责登录**——登录由你手动完成，
+3. 已按 `CorePatch.md` 完成 Core 的 3 处改造；
+4. 游戏客户端已登录、角色已站到地图上（本模块**不负责登录**——登录由你手动完成，
    这也顺带绕开了所有登录态与验证码问题）。
+
+**`clientdriver.json` 里基本不用手填了**（见下节"零配置复用模式"）：
+
+| 配置项 | 是否还要手填 | 说明 |
+| --- | --- | --- |
+| `ProcessName` | 否 | 自动识别正在运行、且连着服务端的客户端进程（含窗口标题佐证） |
+| `ServerIp` | 否 | 留空即"自动跟随"：从客户端真实 TCP 连接反查，并自动收窄抓包过滤器 |
+| `LoginGatePort` 等三段端口 | 否 | 留 0 自动判定 |
+| `View` / `MiniMap` / `Bag` / `Dialog` 校准 | **要** | 世界格↔屏幕像素的换算是纯视觉量，必须实测一次（第五节） |
+| `MapDirHint` | 可选 | 填了才能把中文地名反查成图代码，进图判定更准 |
 
 ---
 
 ## 四、快速开始
+
+### 4.1 零配置复用模式（默认，推荐）
+
+宿主**不自己登录**——账号、密码、服务端地址全部取自你自己客户端的登录过程：
+
+```
+①  打开官方客户端 → 登录 → 创建/进入角色
+②  以管理员身份运行 BotClientDriverHost.exe（不带任何参数）
+③  宿主自动完成三件事：
+      · 认出客户端进程（ProcessName）
+      · 跟随它对服务端的真实连接（ServerIp / 端口）
+      · 从它自己发出的 CM_IDPASSWORD 登录包里还原账号密码（仅存内存，不落盘）
+④  看日志确认识别结果 → 开始挂机
+```
+
+要点：
+
+- **顺序无所谓**：先开宿主后开客户端也行，宿主每秒复查一次（进程出现、连接建立后自动补上）。
+- **登录包什么时候抓**：客户端**下一次点"登录"**的那一刻（含掉线重连、退回登录界面重登、
+  换角色）。如果宿主启动时客户端已经登录完成，本次拿不到历史登录包——
+  不影响挂机，只是这次复用不到账号密码；下次登录即会抓到。
+- **只读**：账号密码是从客户端自己发出的包**解**出来的，宿主不注入、不改包、不碰客户端文件。
+- 命令：`--sniff-only`（只嗅探不点击，先验证链路）、`--fight-x N --fight-y N`（定点挂机）。
+
+### 4.2 老路径：宿主自己登录（可选）
+
+需要显式指定账号时才用（比如客户端不方便重登）：
+
+```
+BotClientDriverHost.exe --login --account <账号>
+   # 密码优先读环境变量 BOT_PASSWORD（不落盘、不进命令行历史）
+```
+
+老路径下 `botsettings.json` 的 `Host` / `Port` 必填，`clientdriver.json` 的 `ServerIp` 可留空继承 `Host`。
+
+### 4.3 首次运行前的准备
 
 ```
 ①  编译 ClientDriver 工程，产出 BotClient.ClientDriver.dll
@@ -90,6 +137,24 @@ Bot 只负责点地图、按键，节流由游戏自身的行走/攻击冷却天
 ③  在宿主里接线（15 行，见 CorePatch.md 第 4 节）
 ④  启动 → 看 SelfCheck() 输出 → 无缺失项即可挂机
 ```
+
+### 4.4 构建与打包（一键出 exe）
+
+宿主是 win-x64 单文件，**在 Linux 上也能直接交叉编译出 Windows exe**，不必等 CI：
+
+```bash
+dotnet restore BotClientDriverHost/BotClientDriverHost.csproj -r win-x64 -p:EnableWindowsTargeting=true
+dotnet publish BotClientDriverHost/BotClientDriverHost.csproj -r win-x64 -c Release \
+  -p:EnableWindowsTargeting=true -o publish
+# → publish/BotClientDriverHost.exe
+#   约 35 MB，self-contained 单文件，目标机免装 .NET 运行时
+```
+
+- 关键开关是 `-p:EnableWindowsTargeting=true`：**不加会报 `NETSDK1100`**（认为你不该在非 Windows 上编 windows 目标）；
+- 需要 .NET 8 SDK（`dotnet --list-sdks` 应有 `8.0.x`），首次 restore 需联网拉 NuGet；
+- 验收标准：三个工程（Core / ClientDriver / DriverHost）编译 **0 warning / 0 error**；
+- `.github/workflows/build-win-x64.yml` 仍然保留：push 到 `main` 会在 windows-latest 上
+  重跑同一套流程，并额外做 PE 架构（必须是 x64）+ 启动冒烟自检，产出 artifact。
 
 ---
 
@@ -140,7 +205,11 @@ Bot 只负责点地图、按键，节流由游戏自身的行走/攻击冷却天
 3. **焦点抢占**：任何前台弹出的窗口（QQ 消息、系统通知）都会让后续点击打偏。
    `ActionGate` 的前台校验会拒绝执行，但**建议挂机时关闭通知**。
 4. **像素规律性**：点击坐标虽加了抖动，长周期统计下仍可能呈现分布特征。
-5. **不保证绝对安全**：本方案把"能不能被检测"的问题从**协议层**移到了**行为层**，
+5. **账号密码在宿主进程内存中短暂驻留**：零配置复用模式下，宿主从客户端自己的
+   `CM_IDPASSWORD` 包里解出明文凭据，**只放在内存、不写配置文件、不落盘**，
+   进程退出即消失；但挂机期间该进程内存中确实存在明文，请勿在共享机器上长时间挂机，
+   也不要把宿主进程的内存转储（dump）交给他人。
+6. **不保证绝对安全**：本方案把"能不能被检测"的问题从**协议层**移到了**行为层**，
    是风险性质的改变，不是风险归零。
 
 ---

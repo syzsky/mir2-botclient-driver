@@ -39,15 +39,29 @@ public sealed class SniffFlow
 public sealed class PacketSniffer : IDisposable
 {
     private readonly ClientDriverConfig _cfg;
-    private readonly IPAddress _serverIp;
     private readonly Dictionary<string, SniffFlow> _flows = new();
     private readonly object _gateLock = new();
     private ICaptureDevice? _device;
     private bool _disposed;
 
+    /// <summary>服务端 IP：配置为空时进入"自动跟随"模式，由客户端真实连接反查得到。</summary>
+    private IPAddress? _serverIp;
+
+    // ---- 自动跟随（ServerIp 未配置时启用）----
+    private readonly HashSet<int> _clientLocalPorts = new();
+    private readonly HashSet<int> _notClientPorts = new();   // 已确认不是客户端端口的本地端口（避免重复查表）
+    private readonly List<int> _clientPids = new();
+    private Timer? _endpointTimer;
+    private bool _portFilterActive;
+    private bool _autoFollow;
+    private int _discoverTick;
+
     public event Action<SniffFlow, FlowDirection, byte[]>? BytesArrived;
     public event Action<string>? Log;
     public event Action<SniffFlow>? FlowOpened;
+
+    /// <summary>自动跟随模式下锁定服务端地址时触发（宿主可回写配置）。</summary>
+    public event Action<string, int>? ServerEndpointLocked;
 
     /// <summary>抓包层统计。</summary>
     public long PacketsSeen { get; private set; }
@@ -56,9 +70,13 @@ public sealed class PacketSniffer : IDisposable
     public PacketSniffer(ClientDriverConfig cfg)
     {
         _cfg = cfg;
-        if (!IPAddress.TryParse(cfg.ServerIp, out var ip))
-            throw new ArgumentException("ClientDriverConfig.ServerIp 未配置或不是合法 IP。");
-        _serverIp = ip;
+        // ServerIp 允许留空：留空 = 自动跟随（按客户端进程的真实连接反查服务端地址）。
+        // 填了但格式不对时给出警告并退回自动模式，而不是直接拒绝启动。
+        if (!string.IsNullOrWhiteSpace(cfg.ServerIp))
+        {
+            if (IPAddress.TryParse(cfg.ServerIp.Trim(), out var ip)) _serverIp = ip;
+            else Emit($"[sniff] 配置的 ServerIp \"{cfg.ServerIp}\" 不是合法 IP，改为自动跟随");
+        }
     }
 
     public void Start()
@@ -69,8 +87,22 @@ public sealed class PacketSniffer : IDisposable
         _device = OpenDevice();
         Emit($"[sniff] 使用网卡 {_device.Name} ({_device.Description})");
 
-        // BPF：只跟这台服务器之间的 TCP，其余流量在内核过滤掉（对性能影响最小）
-        _device.Filter = $"tcp and host {_serverIp}";
+        _autoFollow = _serverIp == null;
+        if (_autoFollow)
+        {
+            // 还不知道服务端在哪：先抓全部 TCP，在用户态按"客户端进程的本地端口集合"过滤，
+            // 首个外部连接一出现就锁定并收窄过滤器（见 RefreshEndpoints / LockServerEndpoint）。
+            _device.Filter = "tcp";
+            _portFilterActive = true;
+            _endpointTimer = new Timer(_ => RefreshEndpoints(), null, 0, 1000);
+            Emit("[sniff] ServerIp 未配置 —— 自动跟随模式：请启动客户端登录，宿主会自行识别进程与服务端地址");
+        }
+        else
+        {
+            // BPF：只跟这台服务器之间的 TCP，其余流量在内核过滤掉（对性能影响最小）
+            _device.Filter = $"tcp and host {_serverIp}";
+        }
+
         _device.OnPacketArrival += OnPacketArrival;
         _device.Open(new DeviceConfiguration
         {
@@ -80,6 +112,164 @@ public sealed class PacketSniffer : IDisposable
         });
         _device.StartCapture();
         Emit("[sniff] 已开始只读抓包（不介入连接，客户端无感）");
+    }
+
+    // ------------------------------------------------------------------ 自动跟随
+
+    /// <summary>
+    /// 每秒刷新一次"客户端进程的本地端口集合"，并（在未锁定时）用它反查服务端地址。
+    /// 只看系统 TCP 连接表，不碰任何连接本身。
+    /// </summary>
+    private void RefreshEndpoints()
+    {
+        if (_disposed || !_autoFollow) return;
+        try
+        {
+            if (_clientPids.Count == 0 || !_clientPids.Any(IsProcessAlive))
+            {
+                _clientPids.Clear();
+                _clientPids.AddRange(ClientDiscovery.FindPidsByProcessName(_cfg.ProcessName));
+            }
+
+            // 还没有 PID 时每 2 秒重试一次识别 —— 允许"先启动宿主、后启动客户端"的顺序，
+            // 也允许进程名不是配置里那个默认值（此时靠自动发现挑最像客户端的进程）。
+            if (_clientPids.Count == 0 && ++_discoverTick % 2 == 1)
+            {
+                var cands = ClientDiscovery.Discover(_cfg, 3);
+                if (cands.Count > 0)
+                {
+                    var best = cands[0];
+                    Emit($"[sniff] 自动识别到客户端进程 {best.ProcessName} (pid={best.Pid})" +
+                         (best.HasWindow ? $" 窗口=\"{best.WindowTitle}\"" : string.Empty));
+                    _cfg.ProcessName = best.ProcessName;
+                    _clientPids.Clear();
+                    _clientPids.AddRange(ClientDiscovery.FindPidsByProcessName(best.ProcessName));
+                    TryLockServerEndpoint(best.ServerIp, best.ServerPort);
+                }
+            }
+
+            var eps = ClientDiscovery.EstablishedOfPids(_clientPids);
+            if (eps.Count == 0) return;
+
+            var ports = new HashSet<int>();
+            var remoteVotes = new Dictionary<string, (int Count, int Port)>();
+
+            foreach (var ep in eps)
+            {
+                ports.Add(ep.LocalPort);
+                if (TcpTableReader.IsLocalOrLoopback(ep.RemoteAddress)) continue;
+
+                remoteVotes.TryGetValue(ep.RemoteAddress, out var cur);
+                remoteVotes[ep.RemoteAddress] = (cur.Count + 1, cur.Port != 0 ? cur.Port : ep.RemotePort);
+            }
+
+            lock (_clientLocalPorts)
+            {
+                _clientLocalPorts.Clear();
+                foreach (int p in ports) _clientLocalPorts.Add(p);
+                _notClientPorts.Clear();   // 端口会被系统复用，负缓存每秒重置一次
+            }
+
+            if (_serverIp == null && remoteVotes.Count > 0)
+            {
+                var top = remoteVotes.OrderByDescending(kv => kv.Value.Count).First();
+                TryLockServerEndpoint(top.Key, top.Value.Port);
+            }
+        }
+        catch (Exception ex)
+        {
+            Emit($"[sniff] 自动跟随刷新异常: {ex.Message}");
+        }
+    }
+
+    /// <summary>
+    /// 自动跟随期的归属判定：先查"客户端本地端口集合"（快路径，每秒刷新一次）；
+    /// 集合里没有时再实时查一次本机 TCP 连接表（慢路径）。
+    ///
+    /// 慢路径不是可选项 —— 客户端刚建立的连接可能还没被那一秒的快照收录，
+    /// 而"登录包"恰好就发生在建连后的第一时间，漏掉它就等于丢掉了账号密码。
+    /// </summary>
+    private bool AcceptAutoFollow(TcpPacket tcp, out bool fromServer)
+    {
+        fromServer = false;
+
+        lock (_clientLocalPorts)
+        {
+            if (_clientLocalPorts.Contains(tcp.SourcePort)) return true;
+            if (_clientLocalPorts.Contains(tcp.DestinationPort)) { fromServer = true; return true; }
+            if (_notClientPorts.Contains(tcp.SourcePort) && _notClientPorts.Contains(tcp.DestinationPort)) return false;
+        }
+
+        int clientPort = 0;
+        try
+        {
+            foreach (var ep in ClientDiscovery.EstablishedOfPids(_clientPids))
+            {
+                if (ep.LocalPort == tcp.SourcePort && ep.RemotePort == tcp.DestinationPort)
+                {
+                    clientPort = tcp.SourcePort;
+                    fromServer = false;
+                    break;
+                }
+                if (ep.LocalPort == tcp.DestinationPort && ep.RemotePort == tcp.SourcePort)
+                {
+                    clientPort = tcp.DestinationPort;
+                    fromServer = true;
+                    break;
+                }
+            }
+        }
+        catch
+        {
+            return false;
+        }
+
+        lock (_clientLocalPorts)
+        {
+            if (clientPort != 0)
+            {
+                _clientLocalPorts.Add(clientPort);
+                return true;
+            }
+            _notClientPorts.Add(tcp.SourcePort);
+            _notClientPorts.Add(tcp.DestinationPort);
+            return false;
+        }
+    }
+
+    private void TryLockServerEndpoint(string ip, int port)
+    {
+        if (_serverIp != null || string.IsNullOrWhiteSpace(ip)) return;
+        if (!IPAddress.TryParse(ip, out var addr)) return;
+
+        _serverIp = addr;
+        _cfg.ServerIp = ip;
+        _portFilterActive = false;
+        Emit($"[sniff] 已锁定服务端地址 {ip}:{port}（来自客户端真实连接；配置里 ServerIp 现可留空）");
+
+        try { if (_device is { Started: true }) _device.Filter = $"tcp and host {ip}"; }
+        catch (Exception ex) { Emit($"[sniff] 收窄过滤器失败（忽略，继续在用户态过滤）: {ex.Message}"); }
+
+        if (_cfg.LoginGatePort == 0 && port != 0)
+        {
+            // 只作为"最可能是哪个网关"的提示，不写死：实际判定仍走 GuessGate
+            Emit($"[sniff] 提示：该连接端口 = {port}");
+        }
+
+        ServerEndpointLocked?.Invoke(ip, port);
+    }
+
+    private static bool IsProcessAlive(int pid)
+    {
+        try
+        {
+            using var p = System.Diagnostics.Process.GetProcessById(pid);
+            return !p.HasExited;
+        }
+        catch
+        {
+            return false;
+        }
     }
 
     private ICaptureDevice OpenDevice()
@@ -129,8 +319,21 @@ public sealed class PacketSniffer : IDisposable
 
             var src = ip.SourceAddress;
             var dst = ip.DestinationAddress;
-            bool fromServer = src.Equals(_serverIp);          // BPF 已保证只与本服务器通信
-            if (!fromServer && !dst.Equals(_serverIp)) return;
+
+            bool fromServer;
+            if (_portFilterActive)
+            {
+                // 自动跟随期：按"这条包属不属于客户端进程的连接"判定
+                if (!AcceptAutoFollow(tcp, out fromServer)) return;
+            }
+            else
+            {
+                if (_serverIp == null) return;                // 还没锁定任何端点
+                bool srcIsServer = src.Equals(_serverIp);
+                bool dstIsServer = dst.Equals(_serverIp);
+                if (!srcIsServer && !dstIsServer) return;
+                fromServer = srcIsServer;
+            }
 
             PacketsMatched++;
             var serverEp = new IPEndPoint(fromServer ? src : dst, fromServer ? tcp.SourcePort : tcp.DestinationPort);
@@ -187,6 +390,8 @@ public sealed class PacketSniffer : IDisposable
     {
         if (_disposed) return;
         _disposed = true;
+        try { _endpointTimer?.Dispose(); } catch { }
+        _endpointTimer = null;
         try
         {
             if (_device != null)
