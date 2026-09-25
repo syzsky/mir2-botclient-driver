@@ -428,8 +428,16 @@ public sealed class HostRunner
         try
         {
             List<ClientCandidate> cands = ClientDiscovery.Discover(Driver, max);
-            Emit($"[扫描] 候选客户端 {cands.Count} 条" +
+            int gameLike = cands.Count(c => c.LikelyGame);
+            Emit($"[扫描] 候选客户端 {cands.Count} 条（判为游戏本体 {gameLike} 条）" +
                  (Driver.TargetPid > 0 ? $"（当前已锁定 pid={Driver.TargetPid}）" : "（当前为自动挑选）"));
+
+            var best = cands.FirstOrDefault();
+            if (best != null) Emit($"[扫描] 建议跟随：{best}");
+            if (cands.Count > 0 && gameLike == 0)
+                Emit("[扫描] 注意：没有一行像『游戏本体』（大窗口 + 非 HTTP 端口）——列表里多为登录器/更新器的 " +
+                     "HTTP 连接或小工具窗。请把游戏客户端启动并**登录进游戏**后再点「重新扫描」。");
+
             return cands;
         }
         catch (Exception ex)
@@ -449,8 +457,11 @@ public sealed class HostRunner
         Driver.TargetPid = cand.Pid;
         if (!string.IsNullOrWhiteSpace(cand.ServerIp)) Driver.ServerIp = cand.ServerIp;
 
-        Emit($"[选择] 目标客户端：{cand.ProcessName}(pid={cand.Pid}) → {cand.ServerIp}:{cand.ServerPort}" +
-             (cand.HasWindow ? $"｜窗口=\"{cand.WindowTitle}\"" : "｜（无可见窗口）"));
+        Emit($"[选择] 目标客户端：{cand.ProcessName}(pid={cand.Pid}) [{cand.Kind}] → {cand.ServerIp}:{cand.ServerPort}" +
+             (cand.HasWindow ? $"｜窗口=\"{cand.WindowTitle}\" {cand.WindowSize}" : "｜（无可见窗口）"));
+        if (!cand.LikelyGame)
+            Emit($"[选择] 注意：这条判为「{cand.Kind}」（{cand.PortKind}）——若随后抓不到游戏流量，" +
+                 "请重新扫描并选『类型=游戏』那一条（大窗口 + 非 HTTP 端口）。");
 
         try
         {

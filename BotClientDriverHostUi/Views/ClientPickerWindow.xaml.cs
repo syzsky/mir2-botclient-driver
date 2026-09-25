@@ -1,3 +1,4 @@
+using System.Linq;
 using System.Windows;
 using System.Windows.Controls;
 using System.Windows.Input;
@@ -11,11 +12,14 @@ namespace BotClientDriverHostUi.Views;
 /// 由人工选定要跟随的那一条。选定后钉住 PID（<c>TargetPid</c>），并可选做一次只读的
 /// 帧定界自动探测（换引擎/换服时用，全程零点击）。
 ///
-/// 界面自己不做任何协议判断，候选与探测全部来自 ClientDiscovery / ClientDriverHost。
+/// 界面自己不做协议判断：候选与"游戏 / 疑似登录器"的类型判定全部来自 ClientDiscovery
+/// （大窗口 + 非 HTTP 端口 + 进程父子关系），这里只负责呈现与筛选。
 /// </summary>
 public partial class ClientPickerWindow : Window
 {
     private readonly HostRunner _runner;
+    private List<ClientCandidate> _all = new();
+    private int _warnedPid;
     private bool _busy;
 
     public ClientPickerWindow(HostRunner runner)
@@ -30,13 +34,30 @@ public partial class ClientPickerWindow : Window
 
     private void Rescan()
     {
-        var list = _runner.ScanClients();
-        CandidateList.ItemsSource = list;
-        CountText.Text = $"候选 {list.Count} 条" + (_runner.Driver.TargetPid > 0
+        _all = _runner.ScanClients();
+        ApplyFilter();
+    }
+
+    /// <summary>按"只看疑似游戏客户端"勾选状态刷新列表；默认把疑似登录器/未知行也列出来（方便对照）。</summary>
+    private void ApplyFilter()
+    {
+        bool gameOnly = GameOnlyChk.IsChecked == true;
+        var shown = gameOnly ? _all.Where(c => c.LikelyGame).ToList() : _all;
+
+        CandidateList.ItemsSource = shown;
+
+        int launcherLike = _all.Count(c => !c.LikelyGame);
+        CountText.Text = $"候选 {_all.Count} 条（疑似登录器/未知 {launcherLike} 条）" + (_runner.Driver.TargetPid > 0
             ? $"（已锁定 pid={_runner.Driver.TargetPid}）"
             : "（自动挑选）");
-        if (list.Count > 0 && CandidateList.SelectedIndex < 0) CandidateList.SelectedIndex = 0;
+
+        if (shown.Count > 0 && CandidateList.SelectedIndex < 0) CandidateList.SelectedIndex = 0;
+        if (shown.Count == 0 && _all.Count > 0)
+            HintText.Text = "按当前筛选没有『游戏』类型的候选——说明只有登录器/更新器的连接，" +
+                            "请把游戏客户端启动并登录进游戏后再点「重新扫描」。";
     }
+
+    private void OnFilterChanged(object sender, RoutedEventArgs e) => ApplyFilter();
 
     private void SetButtons()
     {
@@ -66,6 +87,21 @@ public partial class ClientPickerWindow : Window
             HintText.Text = "先在上面选一条候选（双击该行也可以）。候选为空 = 客户端还没启动或还没点登录。";
             return;
         }
+
+        // 防呆：选到"疑似登录器"时先提示一次，再点一次才真正应用
+        if (!cand.LikelyGame && _warnedPid != cand.Pid)
+        {
+            _warnedPid = cand.Pid;
+            var gameLike = _all.Where(c => c.LikelyGame).OrderByDescending(c => c.Score).FirstOrDefault();
+            HintText.Text =
+                $"注意：pid={cand.Pid} {cand.ProcessName} 判为「{cand.Kind}」（{cand.PortKind}，窗口 {cand.WindowSize}）。" +
+                (gameLike != null
+                    ? $"更像游戏本体的是 pid={gameLike.Pid} {gameLike.ProcessName}（窗口 {gameLike.WindowSize}，评分 {gameLike.Score}）。"
+                    : "当前列表里没有更像游戏本体的行——请确认客户端已登录进游戏。") +
+                " 确认仍要跟随这条，请再点一次「选定并跟随」。";
+            return;
+        }
+        _warnedPid = 0;
 
         _busy = true;
         SetButtons();
