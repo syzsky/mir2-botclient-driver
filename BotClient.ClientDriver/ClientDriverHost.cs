@@ -295,7 +295,18 @@ public sealed class ClientDriverHost : IAsyncDisposable
         _sniffer.BytesArrived += OnBytes;
         _sniffer.ServerEndpointLocked += (ip, port) =>
             Log?.Invoke($"[host] 服务端地址已自动锁定 {ip}:{port}（可留空，宿主每次自行识别）");
-        _sniffer.Start();
+        try
+        {
+            _sniffer.Start();
+        }
+        catch
+        {
+            // Start 里可能已经配好过滤器、起了定时器甚至打开了网卡；失败必须收干净，
+            // 否则补装 Npcap 后重试会残留一份半初始化嗅探器（重复订阅、句柄泄漏）。
+            try { _sniffer.Dispose(); } catch { /* 忽略 */ }
+            _sniffer = null;
+            throw;
+        }
     }
 
     private void ValidateCalibration()
@@ -468,6 +479,7 @@ public sealed class ClientDriverHost : IAsyncDisposable
         lines.Add($"帧定界: {Config.Framing?.Describe() ?? "经典 Mir2（DDCCBBAA+长度 / '#'..'!'）"}");
         lines.Add($"命令码缺失: {(CmdCatalog.Missing.Count == 0 ? "无" : string.Join("、", CmdCatalog.Missing))}");
         lines.Add($"未接管动作: {Bridge.DescribeDropped()}");
+        lines.Add($"Npcap: {Sniff.NpcapEnvironment.Describe()}");
         if (_sniffer != null)
             lines.Add($"抓包: 收到 {_sniffer.PacketsSeen} 包，匹配 {_sniffer.PacketsMatched} 包");
 

@@ -46,6 +46,31 @@ jobs:
           -p:DebugType=none
           -o publish
 
+      # 把官方 Npcap 安装器原样放进分发包：宿主首次运行检测到缺失时会自动静默补装
+      # （/S /winpcap_mode=yes），用户侧体感就是"解压即用"。
+      # Npcap 是内核驱动，无法内嵌进单文件 exe —— 这是最接近"内置"的可行形态。
+      # 下载失败不阻塞构建：宿主会退化为提示用户手动放置安装器。
+      - name: 附带 Npcap 安装器（可选，自用分发）
+        continue-on-error: true
+        shell: pwsh
+        run: |
+          $dir = "publish/npcap"
+          New-Item -ItemType Directory -Force -Path $dir | Out-Null
+          try {
+            $html = [string](Invoke-WebRequest -UseBasicParsing -Uri "https://npcap.com/dist/" -TimeoutSec 60).Content
+            $vers = [regex]::Matches($html, 'npcap-([\d.]+)\.exe') |
+                    ForEach-Object { $_.Groups[1].Value } | Sort-Object { [version]$_ } -Unique
+            if (-not $vers) { throw "目录页里没解析到 npcap-*.exe 文件名" }
+            $ver = $vers | Select-Object -Last 1
+            $name = "npcap-$ver.exe"
+            $out = Join-Path $dir $name
+            Invoke-WebRequest -UseBasicParsing -Uri "https://npcap.com/dist/$name" -OutFile $out -TimeoutSec 300
+            Write-Host ("[npcap] 已附带 {0} ({1:N2} MB)" -f $name, ((Get-Item $out).Length / 1MB))
+            "NPCAP_BUNDLED=$name" | Out-File -Append $env:GITHUB_ENV
+          } catch {
+            Write-Warning "[npcap] 附带安装器失败（不影响构建）: $_"
+          }
+
       - name: 运行测试（Windows 实机冒烟）
         shell: pwsh
         run: |
@@ -101,7 +126,15 @@ jobs:
           if ($out3 -match "Unhandled exception") { throw "连接失败路径出现未处理异常" }
           if ($code3 -eq 0) { throw "连不上服务端却返回 0" }
 
-          "SMOKE_RESULT=通过（PE/manifest/单文件/help/无配置/连接失败 共 6 项）" | Out-File -Append $env:GITHUB_ENV
+          # 用例 D：--install-npcap 指向不存在的安装器 -> 必须友好失败（不得抛未处理异常）
+          $out4 = & $exe --install-npcap "$env:RUNNER_TEMP\no-such-dir\npcap-0.0.exe" 2>&1 | Out-String
+          $code4 = $LASTEXITCODE
+          Write-Host "[8] Npcap 补装失败路径 exit=$code4"
+          Write-Host $out4
+          if ($out4 -match "Unhandled exception") { throw "--install-npcap 路径出现未处理异常" }
+          if ($code4 -lt 0) { throw "进程异常终止: $code4" }
+
+          "SMOKE_RESULT=通过（PE/manifest/单文件/help/无配置/连接失败/Npcap补装 共 7 项）" | Out-File -Append $env:GITHUB_ENV
           "### 运行测试" >> $env:GITHUB_STEP_SUMMARY
           "- x64 PE 校验：通过" >> $env:GITHUB_STEP_SUMMARY
           "- 管理员 manifest：通过" >> $env:GITHUB_STEP_SUMMARY
@@ -109,6 +142,7 @@ jobs:
           "- --help 退出码 0：通过" >> $env:GITHUB_STEP_SUMMARY
           "- 无配置友好报错：通过" >> $env:GITHUB_STEP_SUMMARY
           "- 服务端不可达干净失败：通过" >> $env:GITHUB_STEP_SUMMARY
+          "- Npcap 补装路径（不存在安装器）友好失败：通过" >> $env:GITHUB_STEP_SUMMARY
 
           # 断言全部通过：显式归零，避免末条用例的非零退出码污染本步骤结果
           exit 0
@@ -135,4 +169,5 @@ jobs:
           "### 打包结果" >> $env:GITHUB_STEP_SUMMARY
           "- 产物：``$env:EXE_NAME``" >> $env:GITHUB_STEP_SUMMARY
           "- 体积：$([math]::Round([int]$env:EXE_SIZE_BYTES / 1MB, 2)) MB" >> $env:GITHUB_STEP_SUMMARY
-          "- 运行前提：管理员权限 + 已安装 Npcap（嗅探用）" >> $env:GITHUB_STEP_SUMMARY
+          "- 随包 Npcap 安装器：$(if ($env:NPCAP_BUNDLED) { $env:NPCAP_BUNDLED } else { '未附带（下载失败，宿主会提示手动放置）' })" >> $env:GITHUB_STEP_SUMMARY
+          "- 运行前提：管理员权限 + Windows x64；Npcap 缺失时由宿主自动静默补装（随包安装器）" >> $env:GITHUB_STEP_SUMMARY

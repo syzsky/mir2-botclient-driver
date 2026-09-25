@@ -32,7 +32,8 @@ BotRuntime（原样不动）→ IClientDriver → 鼠标/键盘 → 真机客户
 ## 云端打包
 
 `.github/workflows/build-win-x64.yml`：在 GitHub Actions（windows-latest）上还原 → 编译 → 发布
-win-x64 自包含单文件，产物以 artifact 形式提供。
+win-x64 自包含单文件，产物以 artifact 形式提供。工作流还会从 `npcap.com/dist/` 抓一份官方
+Npcap 安装器放进 `publish/npcap/`（拉取失败不阻塞出包），使 artifact 解压即用。
 
 **也可以本地直接出 exe**（Linux/macOS 交叉编译同样可行）：
 
@@ -45,7 +46,10 @@ dotnet publish BotClientDriverHost/BotClientDriverHost.csproj -r win-x64 -c Rele
 ## 本地运行前提
 
 1. **管理员权限**（抓包与模拟输入都需要；manifest 已声明 `requireAdministrator`）
-2. **Npcap** 已安装，安装时勾选 *WinPcap API-compatible Mode*
+2. **Npcap**：分发包随带官方安装器（`npcap\npcap-x.xx.exe`）。首次运行检测到未安装时，
+   宿主会**自动静默补装**（`/S /winpcap_mode=yes`）并提示重跑一次；也可手动
+   `BotClientDriverHost.exe --install-npcap`。安装必须带 WinPcap 兼容模式
+   （Npcap 是内核驱动，无法内嵌进单文件 exe，详见 `BotClient.ClientDriver/README.md` 第十一节）
 3. 游戏客户端已启动并**进入游戏**（本程序不改客户端任何文件）
 4. 首次运行先校准：`BotClientDriverHost.exe --calibrate`
 
@@ -101,6 +105,26 @@ $env:BOT_PASSWORD = "你的密码"
 离线验证：`dotnet run --project tools/FramingSelfTest/FramingSelfTest.csproj`
 （5 个用例：经典魔数 / **换服变体魔数** / 经典文本帧 / 高熵随机流如实否决 / 跨 TCP 段重组；
 CI 每次 push 都会跑，全绿才出 exe）。
+
+### 抓包驱动：随包安装器 + 首次运行自动补装
+
+Npcap 是内核驱动 + 用户态 DLL，**无法内嵌进单文件 exe**，所以做法是"随包带官方安装器、
+宿主自己补装"，用户侧体感等同于内置：
+
+```
+解压后：BotClientDriverHost.exe + clientdriver.json + npcap\npcap-x.xx.exe
+首次运行（管理员）：
+  未装 Npcap → 自动静默安装（/S /winpcap_mode=yes）→ 提示"重新运行本程序" → 再跑即开挂
+  已装 Npcap → 直接进入挂机，无需任何手动步骤
+```
+
+| 参数 | 作用 |
+| --- | --- |
+| （默认） | 抓包前检测缺失就自动静默补装 |
+| `--install-npcap [安装器]` | 只装 / 修 Npcap 后退出（路径可省，自动用随包安装器） |
+| `--no-auto-install` | 关闭自动补装 |
+
+原理、边界与许可注意事项见 [`BotClient.ClientDriver/README.md`](BotClient.ClientDriver/README.md) 第十一节。
 
 ## 免责
 

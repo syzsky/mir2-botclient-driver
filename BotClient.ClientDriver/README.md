@@ -92,7 +92,9 @@ Bot 只负责点地图、按键，节流由游戏自身的行走/攻击冷却天
 
 ## 三、前置条件
 
-1. **Npcap** 已安装（WinPcap 兼容模式勾选）；
+1. **Npcap**（必须勾 WinPcap 兼容模式）：分发包已随带官方安装器 `npcap\npcap-x.xx.exe`，
+   宿主首次运行检测到缺失会**自动静默补装**（`/S /winpcap_mode=yes`）并提示重跑；
+   也可手动执行 `BotClientDriverHost.exe --install-npcap`。原理与边界见第十一节；
 2. 以**管理员**身份运行（抓包需要）；
 3. 已按 `CorePatch.md` 完成 Core 的 3 处改造；
 4. 游戏客户端已登录、角色已站到地图上（本模块**不负责登录**——登录由你手动完成，
@@ -181,7 +183,7 @@ dotnet publish BotClientDriverHost/BotClientDriverHost.csproj -r win-x64 -c Rele
 
 | 步骤 | 动作 | 验收 |
 | --- | --- | --- |
-| 1 | 安装 Npcap（勾选 WinPcap 兼容模式） | 管理员运行宿主不报抓包初始化失败 |
+| 1 | 抓包驱动：官方 `npcap-x.xx.exe` 放进 exe 同目录即可（首次运行自动静默补装，也可 `--install-npcap` 手动） | 自检报告出现 `Npcap: 已安装`，且不报抓包初始化失败 |
 | 2 | 跑 `CalibrationTool`，量 F1–F8（视图 / 小地图 / 背包 / 对话框） | 逐格验证：走相邻一格，方向与距离正确（第五节） |
 | 3 | 按 `CorePatch.md` 完成 Core 3 处改造 + 宿主 15 行接线 | `SelfCheck()` 输出无缺失项 |
 
@@ -348,6 +350,56 @@ dotnet run --project tools/FramingSelfTest/FramingSelfTest.csproj
 
 **当前已知不足（如实）**
 
-- `Overrides` 目前只在内存可填、未持久化：换一个服要改代码。建议后续加 `packs/<服名>.json`
-  侧面文件，实现多服共存、切换不重编译；
+- 自动定界只解决 **L2（帧定界）**；命令码 **L3** 仍需按服填 `cmdOverrides`（已持久化进 `clientdriver.json`，
+  换服改 json 即可）；上行加密链被改过的服仍要 `--login` 手填账号；
 - 适配只需打通该服的关键 `SM_` / `CM_`，其余命令码记入 `Missing` 属正常，不影响挂机。
+
+---
+
+## 十一、Npcap：为什么不能内置，以及"免手动装"怎么落地
+
+### 11.1 硬约束（绕不过去的三条）
+
+| 事实 | 后果 |
+| --- | --- |
+| Npcap 是**内核驱动**（`npcap.sys` + NPF 服务）+ 用户态 `wpcap.dll` / `Packet.dll` | 驱动必须注册进系统、用户态按名字加载，**无法像普通 DLL 那样内嵌进单文件 exe** |
+| 驱动安装需要管理员 + 驱动签名校验 | 至少要过一次 UAC，做不到严格意义的"零安装" |
+| Npcap 免费版许可 | 自用 / 随包原样分发可以；作为商业产品 OEM 再分发需向 Nmap Project 取得授权 |
+
+### 11.2 落地形态：随包安装器 + 首次运行自动补装
+
+```
+BotClientDriverHost.exe
+clientdriver.json / botsettings.json
+npcap\
+  npcap-1.xx.exe        ← 官方安装器原样附带
+```
+
+宿主抓包前的行为：
+
+1. **探测**：查 `System32\Npcap\wpcap.dll`（Npcap 默认布局）或 `System32\wpcap.dll`（WinPcap 兼容模式），
+   32 位视图 `SysWOW64` 一并认，避免"装了但位数不匹配"被误判；
+2. **已装** → 直接抓包，日志 `抓包环境: Npcap 已就绪`；
+3. **未装** → 在 exe 同目录 / `npcap\` / `redist\` / `tools\` 里找 `npcap-*.exe`；
+4. **找到** → 静默安装 `/S /winpcap_mode=yes`（等待安装器退出，最长 5 分钟），成功后提示
+   "请重新运行本程序"，退出码 3；
+5. **没找到或装失败** → 打印可照做的提示（官网地址、该放哪、`--install-npcap` 用法），退出码 3，
+   不再把 `DllNotFoundException` 直接甩给用户。
+
+之所以装完要**重跑**：.NET 里 libpcap 的静态初始化失败会被缓存，同进程内重试不可靠。
+
+### 11.3 相关命令行
+
+| 参数 | 作用 |
+| --- | --- |
+| （默认） | 抓包前检测到 Npcap 缺失就自动静默补装 |
+| `--install-npcap [安装器路径]` | 只装 / 修 Npcap 后退出；路径可省（自动用随包安装器） |
+| `--no-auto-install` | 关闭自动补装（想自己管控驱动时用） |
+
+自检报告新增一行：`Npcap: 已安装 / 未安装（随包安装器: npcap-x.xx.exe）`。
+
+### 11.4 CI 行为
+
+`build-win-x64` 在发布完成后尝试从 `https://npcap.com/dist/` 拉取最新官方安装器放进
+`publish/npcap/`（`continue-on-error`：拉不到不阻塞出包，宿主降级为提示用户手动放置）。
+冒烟新增用例：`--install-npcap` 指向不存在的安装器时必须友好失败（不得抛未处理异常）。

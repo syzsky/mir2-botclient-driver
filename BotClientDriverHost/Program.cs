@@ -1,5 +1,6 @@
 using System.Text;
 using BotClient.ClientDriver;
+using BotClient.ClientDriver.Sniff;
 using BotClient.Net;
 using BotClient.Protocol;
 using BotClient.Session;
@@ -20,6 +21,9 @@ namespace BotClientDriverHost;
 internal static class Program
 {
     private static readonly CancellationTokenSource Shutdown = new();
+
+    /// <summary>程序所在目录：随包 Npcap 安装器、配置文件都以此为准。</summary>
+    private static readonly string BaseDir = AppContext.BaseDirectory;
 
     private static async Task<int> Main(string[] args)
     {
@@ -44,7 +48,7 @@ internal static class Program
             return 0;
         }
 
-        string baseDir = AppContext.BaseDirectory;
+        string baseDir = BaseDir;
         string settingsPath = cli.SettingsPath ?? Path.Combine(baseDir, "botsettings.json");
         string driverPath = cli.DriverPath ?? Path.Combine(baseDir, "clientdriver.json");
 
@@ -59,6 +63,12 @@ internal static class Program
         {
             Say("[host] 校准模式：只量窗口与界面坐标，不登录、不嗅探");
             return CalibrationTool.Run(driverPath);
+        }
+
+        if (cli.InstallNpcap != null)
+        {
+            Say("[host] Npcap 安装模式：只处理抓包驱动，不登录、不挂机");
+            return InstallNpcap(cli.InstallNpcap);
         }
 
         var settings = HostSettings.Load(settingsPath);
@@ -133,17 +143,117 @@ internal static class Program
             host.StartSniffing();
             return true;
         }
-        catch (Exception ex) when (ex is DllNotFoundException
-                                   || ex.Message.Contains("抓包设备")
-                                   || ex.GetType().Name.Contains("Pcap"))
+        catch (Exception ex) when (IsPcapFailure(ex))
         {
             Console.Error.WriteLine($"[host] 抓包初始化失败: {ex.Message}");
+
+            // 兜底补装：万一启动闸门那次探测被安全软件干扰（或用户跳过了探测），
+            // 这里再自动装一次，装完让用户重跑即可，不必自己去官网找安装器。
+            if (!NpcapEnvironment.IsDriverPresent())
+            {
+                var probe = NpcapEnvironment.Probe(BaseDir, autoInstall: true);
+                if (probe.Status == NpcapProbeStatus.InstalledNow)
+                {
+                    Say("[host] " + probe.Message);
+                    Console.Error.WriteLine("[host] 请重新运行本程序（管理员）即可挂机。");
+                    return false;
+                }
+
+                if (probe.Status is NpcapProbeStatus.InstallFailed or NpcapProbeStatus.Missing)
+                {
+                    Console.Error.WriteLine("[host] 自动补装未成功: " + probe.Message);
+                }
+            }
+
             Console.Error.WriteLine("[host] 请依次确认：");
             Console.Error.WriteLine("        ① 已安装 Npcap，且安装时勾选 \"WinPcap API-compatible Mode\"（装了 WinPcap 不算）；");
             Console.Error.WriteLine("        ② 以管理员身份运行（抓包必须）；");
-            Console.Error.WriteLine("        ③ 机器至少有一块已分配 IPv4 的网卡（虚拟机请确认网卡桥接/NAT 正常）。");
+            Console.Error.WriteLine("        ③ 机器至少有一块已分配 IPv4 的网卡（虚拟机请确认网卡桥接/NAT 正常）；");
+            Console.Error.WriteLine("        ④ 或把官方 npcap-x.xx.exe 放到本程序同目录（npcap\\ 子目录也行），再执行 --install-npcap。");
             return false;
         }
+    }
+
+    /// <summary>
+    /// Npcap 环境闸门（抓包前调用）：缺失就用随包安装器静默补装。
+    /// 目的是让用户看到的不是 DllNotFoundException，而是"下一步该做什么"。
+    /// </summary>
+    private static bool EnsureNpcap(bool autoInstall)
+    {
+        var probe = NpcapEnvironment.Probe(BaseDir, autoInstall);
+        switch (probe.Status)
+        {
+            case NpcapProbeStatus.Ready:
+                Say("[host] 抓包环境: Npcap 已就绪");
+                return true;
+
+            case NpcapProbeStatus.InstalledNow:
+                Say("[host] " + probe.Message);
+                Console.Error.WriteLine("[host] 驱动已装好，请重新运行本程序（管理员），之后不用再管这一步。");
+                return false;
+
+            default:
+                Console.Error.WriteLine("[host] 抓包环境未就绪: " + probe.Message);
+                return false;
+        }
+    }
+
+    /// <summary>
+    /// 只装/修 Npcap（--install-npcap [安装器路径]）。
+    /// 路径可省：缺省取 exe 同目录（含 npcap\ 子目录）里的 npcap-*.exe。
+    /// </summary>
+    private static int InstallNpcap(string installerArg)
+    {
+        if (NpcapEnvironment.IsDriverPresent())
+        {
+            Say("[host] 检测到 Npcap 已安装，无需重复安装（要卸载/换版本请直接用官方安装器）。");
+            return 0;
+        }
+
+        string? installer = string.IsNullOrWhiteSpace(installerArg)
+            ? NpcapEnvironment.FindInstaller(BaseDir)
+            : installerArg;
+
+        if (installer == null)
+        {
+            Console.Error.WriteLine("[host] 未找到安装器：请把 npcap-x.xx.exe 放到本程序同目录（或 npcap\\ 子目录），");
+            Console.Error.WriteLine("        或显式指定：BotClientDriverHost.exe --install-npcap D:\\npcap-1.80.exe");
+            return 2;
+        }
+
+        Say($"[host] 使用安装器: {installer}");
+        if (!NpcapEnvironment.TryInstall(installer, out string detail))
+        {
+            Console.Error.WriteLine($"[host] Npcap 安装失败: {detail}");
+            return 3;
+        }
+
+        Say("[host] Npcap 安装成功（WinPcap 兼容模式已开），现在可以直接运行本程序挂机了");
+        return 0;
+    }
+
+    /// <summary>判定异常是否属于"抓包环境问题"（而不是业务逻辑错误），内层异常一并检查。</summary>
+    private static bool IsPcapFailure(Exception ex)
+    {
+        for (Exception? e = ex; e != null; e = e.InnerException)
+        {
+            if (e is DllNotFoundException or EntryPointNotFoundException or BadImageFormatException)
+            {
+                return true;
+            }
+
+            if (e.Message.Contains("抓包设备"))
+            {
+                return true;
+            }
+
+            if (e.GetType().Name.Contains("Pcap"))
+            {
+                return true;
+            }
+        }
+
+        return false;
     }
 
     /// <summary>
@@ -195,6 +305,7 @@ internal static class Program
         host.Attach(new Attachment(session, runtime));
         runtime.NpcMessage += (id, text) => host.FeedNpcDialog(id, text);
         runtime.SystemMessage += text => host.FeedSystemMessage(text);
+        if (!EnsureNpcap(cli.AutoInstallNpcap)) return 3;
         if (!TryStartSniffing(host)) return 3;
 
         Say(host.SelfCheck());
@@ -326,6 +437,7 @@ internal static class Program
         host.Attach(new Attachment(session, runtime));
         runtime.NpcMessage += (id, text) => host.FeedNpcDialog(id, text);
         runtime.SystemMessage += text => host.FeedSystemMessage(text);
+        if (!EnsureNpcap(cli.AutoInstallNpcap)) return 3;
         if (!TryStartSniffing(host)) return 3;
 
         Say(host.SelfCheck());
@@ -450,6 +562,12 @@ internal sealed class Cli
     /// <summary>换服适配：只读采样后自动探测帧定界，并写回 clientdriver.json 的 framing 段。</summary>
     public bool AutoFrame { get; private set; }
 
+    /// <summary>只处理 Npcap 后退出。null = 未指定；空串 = 指定了但没给路径（自动找随包安装器）。</summary>
+    public string? InstallNpcap { get; private set; }
+
+    /// <summary>抓包前检测到 Npcap 缺失时，是否用随包安装器自动静默补装（默认开启）。</summary>
+    public bool AutoInstallNpcap { get; private set; } = true;
+
     public int FightPointX { get; private set; } = -1;
 
     public int FightPointY { get; private set; } = -1;
@@ -510,6 +628,15 @@ internal sealed class Cli
                 case "--autoframe":
                     cli.AutoFrame = true;
                     break;
+                case "--install-npcap":
+                    // 路径可省：后面跟着的不是另一个选项时才算路径
+                    cli.InstallNpcap = i + 1 < args.Length && !args[i + 1].StartsWith('-')
+                        ? args[++i]
+                        : string.Empty;
+                    break;
+                case "--no-auto-install":
+                    cli.AutoInstallNpcap = false;
+                    break;
                 case "--login":
                 case "--direct":
                     cli.Login = true;
@@ -557,9 +684,15 @@ internal sealed class Cli
             挂机:
               --fight-x <格> --fight-y <格>   定点挂机坐标（都不给则跟随 AI 默认行为）
 
+            抓包环境（Npcap）:
+              --install-npcap [安装器]  只装/修 Npcap 后退出。安装器路径可省：缺省用本程序同目录
+                                        （含 npcap\ 子目录）里的 npcap-*.exe
+              --no-auto-install         关闭"抓包前检测到 Npcap 缺失就自动静默补装"（默认开启）
+
             运行前提:
               1) 以管理员身份运行（manifest 已声明 requireAdministrator）
-              2) 已安装 Npcap（安装时勾选 WinPcap 兼容模式）
+              2) 抓包驱动 Npcap（安装时勾选 WinPcap 兼容模式）；
+                 未装时只要把官方 npcap-x.xx.exe 放在本程序同目录，首次运行会自动静默补装
               3) 游戏客户端已启动并登录（本宿主不改客户端文件、不改 IP、不介入连接）
             """);
     }
