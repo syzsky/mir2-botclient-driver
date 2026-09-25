@@ -88,6 +88,28 @@ public sealed class PacketSniffer : IDisposable
         Emit($"[sniff] 使用网卡 {_device.Name} ({_device.Description})");
 
         _autoFollow = _serverIp == null;
+
+        _device.OnPacketArrival += OnPacketArrival;
+
+        // 关键顺序：必须先 Open（内部 pcap_activate 激活句柄），之后才能设置 BPF Filter 与 StartCapture。
+        // SharpPcap 6.x 在设备未打开时读写 Filter 会直接抛 "device is not open"，导致宿主一启动就失败。
+        try
+        {
+            _device.Open(new DeviceConfiguration
+            {
+                Mode = DeviceModes.Promiscuous,
+                ReadTimeout = 1000,
+                BufferSize = 4 * 1024 * 1024,
+            });
+        }
+        catch (Exception ex)
+        {
+            throw new InvalidOperationException(
+                $"抓包设备打开失败（{_device.Name}）：{ex.Message}。" +
+                "请依次确认：① 以管理员身份运行本程序；② Npcap 已装好（安装后建议重启一次系统）；" +
+                "③ 该网卡未被 Wireshark 等抓包软件独占；④ 可在 clientdriver.json 用 CaptureDevice 指定其它网卡。", ex);
+        }
+
         if (_autoFollow)
         {
             // 还不知道服务端在哪：先抓全部 TCP，在用户态按"客户端进程的本地端口集合"过滤，
@@ -103,13 +125,6 @@ public sealed class PacketSniffer : IDisposable
             _device.Filter = $"tcp and host {_serverIp}";
         }
 
-        _device.OnPacketArrival += OnPacketArrival;
-        _device.Open(new DeviceConfiguration
-        {
-            Mode = DeviceModes.Promiscuous,
-            ReadTimeout = 1000,
-            BufferSize = 4 * 1024 * 1024,
-        });
         _device.StartCapture();
         Emit("[sniff] 已开始只读抓包（不介入连接，客户端无感）");
     }
