@@ -6,18 +6,17 @@ public sealed class MirMapFile : IDisposable
 {
     private const int HeaderSize = 52;
 
-    private readonly byte[] _cells;
-    private readonly int _cellSize;
+    // 刻意**不保留**整份格子数据：解析时只需要它算 _walkable，算完就没用了。
+    // 0.map 的格子数组有 5.88MB，而 _walkable 只有 163KB —— 地图库会缓存最近 2 张，
+    // 保留 _cells 等于常驻 12MB 死内存。原来还有个 public CellData 暴露它，但全仓无调用方。
     private readonly bool[] _walkable;
 
-    private MirMapFile(string mapPath, ushort width, ushort height, MirMapFormat format, byte[] cells, int cellSize, bool[] walkable)
+    private MirMapFile(string mapPath, ushort width, ushort height, MirMapFormat format, bool[] walkable)
     {
         MapPath = mapPath;
         Width = width;
         Height = height;
         Format = format;
-        _cells = cells;
-        _cellSize = cellSize;
         _walkable = walkable;
     }
 
@@ -25,7 +24,9 @@ public sealed class MirMapFile : IDisposable
     public ushort Width { get; }
     public ushort Height { get; }
     public MirMapFormat Format { get; }
-    public ReadOnlySpan<byte> CellData => _cells;
+
+    /// <summary>这张地图占用的可走性数据字节数（诊断/内存估算用）。</summary>
+    public int WalkableBytes => _walkable.Length;
 
     public static MirMapFile? TryOpen(string mapPath)
     {
@@ -69,7 +70,7 @@ public sealed class MirMapFile : IDisposable
                     walkable[idx] = (bk & 0x8000) == 0 && (fr & 0x8000) == 0 && !hasDoor;
                 }
 
-            return new MirMapFile(mapPath, w, h, fmt, cells, cellSize, walkable);
+            return new MirMapFile(mapPath, w, h, fmt, walkable);
         }
         catch { return null; }
     }

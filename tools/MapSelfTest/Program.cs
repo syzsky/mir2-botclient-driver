@@ -1,5 +1,6 @@
 using System.Text;
 using BotClient.Assets;
+using BotClient.Session;
 
 // ============================================================================
 // 地图链路离线自测。
@@ -193,6 +194,65 @@ try
             Check(ratio > 0.10 && ratio < 0.95, "可走比例合理（说明障碍掩码确实生效）", $"{ratio:P1}");
         }
     }
+
+    // ---------------------------------------------------------------- 5. 真实地图上的寻路
+    //
+    // 这一节直接回答"接通地图可走性到底有没有用"：
+    // 在真实的 0.map 上找一对**直线被墙挡住、但确实存在绕行路径**的起终点，
+    // 然后对比"给了地图数据"与"没给地图数据"两种情况的输出。
+    // 这正是改动前必然失败、改动后才会成功的情形 —— 不是纸面推演。
+    Console.WriteLine();
+    Console.WriteLine("== 5. 真实地图上的寻路：墙要能绕，不是走直线 ==");
+
+    if (!Directory.Exists(realDir))
+    {
+        Console.WriteLine($"  跳过：本机没有 {realDir}");
+    }
+    else
+    {
+        var realMap = MirMapFile.TryOpen(Path.Combine(realDir, "0.map"));
+        if (realMap is null)
+        {
+            Check(false, "打开真实 0.map 供寻路验证", "打不开，无法验证");
+        }
+        else
+        {
+            var (start, target, path) = FindDetourCase(realMap);
+            Check(path is not null, "能在 0.map 上找到「需要绕墙」的起终点并求出路径",
+                  path is null ? "没找到（地图太平坦？）" : $"{start} → {target}，{path!.Count - 1} 步");
+
+            if (path is not null)
+            {
+                int cheb = Math.Max(Math.Abs(target.X - start.X), Math.Abs(target.Y - start.Y));
+                Check(path.Count - 1 > cheb, "路径比直线长 —— 确实绕了墙",
+                      $"步数 {path.Count - 1} vs 直线 {cheb}");
+
+                Check(path.All(p => realMap.IsWalkable(p.X, p.Y)), "路径上每一格都是可走的（没穿墙）");
+
+                bool adjacent = true;
+                for (int i = 1; i < path.Count; i++)
+                {
+                    int dx = Math.Abs(path[i].X - path[i - 1].X);
+                    int dy = Math.Abs(path[i].Y - path[i - 1].Y);
+                    if (Math.Max(dx, dy) != 1) { adjacent = false; break; }
+                }
+                Check(adjacent, "路径每一步都是 8 邻接的单步移动");
+
+                // 对照组：不给地图数据时，同样的起终点只会得到一条直线
+                // 注意这里必须用 realMap 的尺寸 —— 用第一节那张 4×3 合成图的尺寸会让坐标越界、直接返回 null。
+                var straight = BotPathFinder.FindPath(start.X, start.Y, target.X, target.Y,
+                    realMap.Width, realMap.Height, (_, _) => true);
+                Check(straight is not null && straight.Count - 1 == cheb,
+                      "对照组：没有地图数据时只会走直线（步数 = 切比雪夫距离）",
+                      straight is null
+                          ? $"返回 null（起点 {start}、终点 {target}、图 {realMap.Width}×{realMap.Height}）"
+                          : $"{straight.Count - 1} 步");
+
+                Check(straight is not null && straight.Any(p => !realMap.IsWalkable(p.X, p.Y)),
+                      "对照组那条直线确实穿过了墙 —— 即：没有地图数据就会撞墙");
+            }
+        }
+    }
 }
 
 finally
@@ -214,4 +274,51 @@ static string? FindRepoRoot()
         dir = dir.Parent;
     }
     return null;
+}
+
+// 在图上找一对"直线被挡、但存在绕行路径"的起终点。
+// 采样而不是全图遍历：0.map 有 49 万格，全遍历会慢到没法当自测跑。
+static ((int X, int Y) Start, (int X, int Y) Target, List<(int X, int Y)>? Path) FindDetourCase(MirMapFile map)
+{
+    int[] dx8 = { 0, 1, 1, 1, 0, -1, -1, -1 };
+    int[] dy8 = { -1, -1, 0, 1, 1, 1, 0, -1 };
+
+    int step = Math.Max(1, Math.Min(map.Width, map.Height) / 40);
+    for (int sy = 0; sy < map.Height; sy += step)
+    {
+        for (int sx = 0; sx < map.Width; sx += step)
+        {
+            if (!map.IsWalkable(sx, sy)) continue;
+
+            for (int dist = 20; dist <= 60; dist += 10)
+            {
+                for (int d = 0; d < 8; d++)
+                {
+                    int tx = sx + dx8[d] * dist;
+                    int ty = sy + dy8[d] * dist;
+                    if (!map.IsWalkable(tx, ty)) continue;
+                    if (!LineBlocked(map, sx, sy, tx, ty)) continue;   // 直线没被挡，不是我们要的用例
+
+                    var path = BotPathFinder.FindPath(sx, sy, tx, ty, map.Width, map.Height, map.IsWalkable);
+                    if (path is not null && path.Count - 1 > dist + 2)
+                        return ((sx, sy), (tx, ty), path);
+                }
+            }
+        }
+    }
+    return ((0, 0), (0, 0), null);
+}
+
+// 沿直线逐格采样，只要有不可走的格子就算"被挡住"
+static bool LineBlocked(MirMapFile map, int x0, int y0, int x1, int y1)
+{
+    int cheb = Math.Max(Math.Abs(x1 - x0), Math.Abs(y1 - y0));
+    if (cheb == 0) return false;
+    for (int i = 1; i <= cheb; i++)
+    {
+        int x = x0 + (int)Math.Round((x1 - x0) * (double)i / cheb);
+        int y = y0 + (int)Math.Round((y1 - y0) * (double)i / cheb);
+        if (!map.IsWalkable(x, y)) return true;
+    }
+    return false;
 }

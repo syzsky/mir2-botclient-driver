@@ -21,6 +21,7 @@
     <Compile Include="../../BotClient.Core/Assets/MirMapFormat.cs" />
     <Compile Include="../../BotClient.Core/Assets/MirMapFile.cs" />
     <Compile Include="../../BotClient.Core/Assets/MirMapLibrary.cs" />
+    <Compile Include="../../BotClient.Core/Session/BotPathFinder.cs" />
   </ItemGroup>
 
 </Project>
