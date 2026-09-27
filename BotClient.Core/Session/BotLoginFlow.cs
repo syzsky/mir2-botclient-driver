@@ -130,8 +130,10 @@ public sealed class BotLoginFlow
             throw new InvalidOperationException($"SM_SELECTSERVER_OK body 格式异常:{decoded}");
 
         string selHost = parts[0];
-        int selPort = int.Parse(parts[1]);
-        int cert = int.Parse(parts[2]);
+        // 端口/凭证是**服务端给的**，畸形时 int.Parse 会抛 FormatException 直接打断登录流程，
+        // 而报错只说"格式不正确"、不带原文。同文件其它解析都用了 TryParse 风格，这里对齐。
+        if (!int.TryParse(parts[1], out int selPort) || !int.TryParse(parts[2], out int cert))
+            throw new InvalidOperationException($"SM_SELECTSERVER_OK body 里的端口/凭证不是数字:{decoded}");
 
         _session.SetSelGate(selHost, selPort);
         _session.SetCertification(cert);

@@ -304,9 +304,20 @@ public sealed class PacketSniffer : IDisposable
 
         lock (_clientLocalPorts)
         {
-            if (_clientLocalPorts.Contains(tcp.SourcePort)) return true;
-            if (_clientLocalPorts.Contains(tcp.DestinationPort)) { fromServer = true; return true; }
-            if (_notClientPorts.Contains(tcp.SourcePort) && _notClientPorts.Contains(tcp.DestinationPort)) return false;
+            bool srcIsClient = _clientLocalPorts.Contains(tcp.SourcePort);
+            bool dstIsClient = _clientLocalPorts.Contains(tcp.DestinationPort);
+
+            // 只在"恰好一端命中"时才凭端口判方向。
+            // 两端都命中时端口号判不出方向（同机私服、或服务端端口恰好落进客户端用过的端口号），
+            // 这时必须交给下面的慢路径按 (本地端口, 远端端口) 成对匹配 —— 那个判据无歧义。
+            // 原来"先查 SourcePort"的顺序会在这种情况下把服务端下行判成上行，
+            // 结果下行字节灌进上行解码器，状态镜像与动作确认同时被污染。
+            if (srcIsClient && !dstIsClient) return true;
+            if (dstIsClient && !srcIsClient) { fromServer = true; return true; }
+
+            if (!srcIsClient && !dstIsClient
+                && _notClientPorts.Contains(tcp.SourcePort) && _notClientPorts.Contains(tcp.DestinationPort))
+                return false;
         }
 
         int clientPort = 0;

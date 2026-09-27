@@ -36,11 +36,19 @@ public sealed class ActionGate
     /// <summary>熔断触发（连续未确认超限）。调用方应暂停挂机并提醒人工介入。</summary>
     public event Action<string>? Tripped;
 
-    /// <summary>连续未确认次数。</summary>
-    public int ConsecutiveUnacked { get; private set; }
+    /// <summary>
+    /// 连续未确认次数。
+    ///
+    /// 写入都在 <see cref="_mutex"/> 里，但 <see cref="IsTripped"/> 与 UI 会在锁外读它，
+    /// 所以底层字段声明为 volatile：保证"刚加完计数"对锁外的读者可见。
+    /// 不是靠它做原子自增 —— 自增仍在锁内。
+    /// </summary>
+    private volatile int _consecutiveUnacked;
+
+    public int ConsecutiveUnacked => _consecutiveUnacked;
 
     /// <summary>是否已熔断（熔断后所有动作一律拒绝，直到 <see cref="Reset"/>）。</summary>
-    public bool IsTripped => ConsecutiveUnacked >= Math.Max(1, _cfg.Behavior.MaxUnackedActions);
+    public bool IsTripped => _consecutiveUnacked >= Math.Max(1, _cfg.Behavior.MaxUnackedActions);
 
     /// <summary>总动作计数（诊断）。</summary>
     public long TotalActions { get; private set; }
@@ -87,12 +95,12 @@ public sealed class ActionGate
 
             if (confirmed)
             {
-                ConsecutiveUnacked = 0;
+                _consecutiveUnacked = 0;
                 ConfirmedActions++;
                 return ActionOutcome.Confirmed;
             }
 
-            ConsecutiveUnacked++;
+            _consecutiveUnacked++;
             if (IsTripped)
             {
                 _cfg.Behavior.Paused = true;
@@ -110,7 +118,7 @@ public sealed class ActionGate
     /// <summary>人工确认问题已解决后复位。</summary>
     public void Reset()
     {
-        ConsecutiveUnacked = 0;
+        _consecutiveUnacked = 0;
         _cfg.Behavior.Paused = false;
         Log?.Invoke("[gate] 已复位");
     }

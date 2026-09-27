@@ -78,11 +78,31 @@ public sealed class MirFrameCodec
         if (_keyPacketPending)
         {
             if (_acc.Count < KeyPacketChars) return output;
-            byte[] rawKey = _acc.GetRange(0, KeyPacketChars).ToArray();
-            _acc.RemoveRange(0, KeyPacketChars);
-            _keyPacketPending = false;
-            string key = Ascii(rawKey);
-            output.Add((new MirIncomingFrame(MirFrameKind.KeyPacket, key, default, null), rawKey));
+
+            // 先校验这 22 字节**像不像**密钥包，而不是无条件切走。
+            //
+            // 为什么必须校验：抓包起点晚于密钥包是最常见的情况（客户端一连上就发，宿主往往晚几秒
+            // 才起来）。那时这 22 字节其实是普通帧的开头，无条件切走会让整条 LoginGate 流
+            // 永久错位 22 字节 —— 凭据再也解不出来，而且不会有任何报错。
+            //
+            // 判据来自 EdCode：密钥包是 6-bit 编码且 Base = 0x3C，所以 22 个字符必定落在
+            // [0x3C, 0x7B] 区间内；文本帧的 '#'(0x23) 天然被排除在外。
+            bool looksLikeKey = true;
+            for (int i = 0; i < KeyPacketChars; i++)
+            {
+                byte b = _acc[i];
+                if (b < 0x3C || b > 0x7B) { looksLikeKey = false; break; }
+            }
+
+            _keyPacketPending = false;   // 无论像不像，只判断一次
+
+            if (looksLikeKey)
+            {
+                byte[] rawKey = _acc.GetRange(0, KeyPacketChars).ToArray();
+                _acc.RemoveRange(0, KeyPacketChars);
+                string key = Ascii(rawKey);
+                output.Add((new MirIncomingFrame(MirFrameKind.KeyPacket, key, default, null), rawKey));
+            }
         }
 
         if (_slicer != null)

@@ -48,6 +48,11 @@ public static class GxxPayload
     /// <summary>Delphi ShortString: 首字节为长度,GBK 编码。</summary>
     public static string ShortString(ReadOnlySpan<byte> b, int off, int maxLen)
     {
+        // off 本身也要判：原来只判了 len 与 off+1+len，off 越界时 b[off] 会直接抛
+        // IndexOutOfRangeException。当前两个调用方的前置校验恰好覆盖了固定偏移，
+        // 但这属于"靠调用方纪律维持"的隐式契约，换个调用点就会踩。
+        if ((uint)off >= (uint)b.Length) return string.Empty;
+
         int len = b[off];
         if (len > maxLen || off + 1 + len > b.Length) return string.Empty;
         return GbkEncoding.Instance.GetString(b.Slice(off + 1, len).ToArray());

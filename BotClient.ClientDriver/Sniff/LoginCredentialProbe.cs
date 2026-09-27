@@ -42,6 +42,9 @@ public sealed class LoginCredentialProbe
         public bool HavePassword;
         public bool CredentialDelivered;
         public readonly List<byte> UpAcc = new(4096);
+
+        /// <summary>登录包先于密钥包到达时，先把 CM_IDPASSWORD 的密文体存在这里，等密钥到达再补解。</summary>
+        public string? PendingLoginBody;
     }
 
     private readonly Dictionary<string, FlowState> _flows = new(StringComparer.Ordinal);
@@ -171,20 +174,43 @@ public sealed class LoginCredentialProbe
             }
 
             string body = inner.Substring(off + 22);
-            string? plain = TryDecryptBody(body, st.ProtocolPassword);
-            if (plain == null) continue;   // 密钥/偏移不对，换个偏移再试
 
-            string[] parts = plain.Split('/');
-            if (parts.Length < 2) continue;
+            if (!st.HavePassword)
+            {
+                // 密钥包还没到。以前这里直接 return false —— 但帧已经被 DrainLoginFrames
+                // 从 UpAcc 里移除了，于是本次登录凭据彻底丢失，只能等玩家下次重登。
+                // 现在把密文体留存，等密钥包到达时由 OnDown 补解。
+                st.PendingLoginBody = body;
+                Log?.Invoke($"[cred] 收到登录包但尚未拿到会话密钥（{flowKey}），已留存待补解");
+                return true;   // 已留存，停止继续扫
+            }
 
-            Publish(parts[0], parts[1], parts.Length > 2 ? parts[2] : string.Empty, flowKey, partial: false);
-            // 本次登录的凭据已拿到：停解该流，避免长时间挂机时上行缓冲区反复累积
-            st.CredentialDelivered = true;
-            st.UpAcc.Clear();
-            return true;
+            if (TryPublishBody(flowKey, st, body)) return true;
+            // 解不开：密钥/偏移不对，换个偏移再试
         }
 
         return false;
+    }
+
+    /// <summary>
+    /// 用当前会话密钥解开 CM_IDPASSWORD 的密文体并发布凭据。成功返回 true。
+    /// 抽出来是为了让"登录包先到、密钥后到"也能补解（见 OnDown）。
+    /// </summary>
+    private bool TryPublishBody(string flowKey, FlowState st, string body)
+    {
+        if (!st.HavePassword) return false;
+
+        string? plain = TryDecryptBody(body, st.ProtocolPassword);
+        if (plain == null) return false;
+
+        string[] parts = plain.Split('/');
+        if (parts.Length < 2) return false;
+
+        Publish(parts[0], parts[1], parts.Length > 2 ? parts[2] : string.Empty, flowKey, partial: false);
+        // 本次登录的凭据已拿到：停解该流，避免长时间挂机时上行缓冲区反复累积
+        st.CredentialDelivered = true;
+        st.UpAcc.Clear();
+        return true;
     }
 
     private static bool TryDecodeHeader(string head, out CmdPack pkt)
