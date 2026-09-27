@@ -41,6 +41,16 @@ public interface ISessionAttachment
     /// 走错图会让后续所有坐标与 NPC 全错位。
     /// </summary>
     string CurrentMap { get; }
+
+    /// <summary>
+    /// 把静态地图可走性接进运行时（落到 <c>BotRuntime.IsWalkable</c>）。
+    ///
+    /// 不接这一步的后果：<c>IsWalkable</c> 恒为 null，<c>EffectiveWalkable</c> 会把每个格子
+    /// 都判成可走，BFS 只会走直线 —— 墙一挡就撞墙，而服务端对撞墙**不给本人任何回包**，
+    /// 我方坐标从此永久超前，之后所有按坐标的判断全部跟着错。
+    /// 传 null 表示"没有地图数据"，运行时退回全可走。
+    /// </summary>
+    void SetStaticWalkable(Func<int, int, bool>? walkable);
 }
 
 /// <summary>
@@ -102,8 +112,43 @@ public sealed class ClientDriverHost : IAsyncDisposable
         MapInfo = MapInfoFile.TryLoad(config.MapDirHint);
         MapEntry = new MapEntryProbe(config, _driver, Ui, Transfer, () => CurrentMap, MapInfo);
 
+        // .map 库：给寻路提供静态障碍数据（墙/关闭的门）。读不到就为 null，运行时退回"全可走"。
+        Maps = MirMapLibrary.TryCreate(config.MapDirHint);
+
         WireLogging();
-        _tickTimer = new Timer(_ => { try { Ui.Tick(); } catch { } }, null, 500, 250);
+        _tickTimer = new Timer(_ => { try { Ui.Tick(); SyncWalkableMap(); } catch { } }, null, 500, 250);
+    }
+
+    /// <summary>.map 文件库（静态障碍来源）。为 null 表示没找到任何地图目录。</summary>
+    public MirMapLibrary? Maps { get; }
+
+    /// <summary>已经接过可走性数据的地图代码，避免每 250ms 重复加载。</summary>
+    private string _walkableMapCode = string.Empty;
+
+    /// <summary>
+    /// 跟随当前地图切换静态可走性数据。
+    ///
+    /// 由 250ms 的 tick 定时器驱动（换图是低频事件，不必为它单开事件通道），
+    /// 同时在 <see cref="Attach"/> 里立刻调一次，免得刚挂上的 250ms 内寻路走的是直线。
+    /// </summary>
+    private void SyncWalkableMap()
+    {
+        if (Maps == null) return;
+
+        string code = CurrentMap;
+        if (string.IsNullOrWhiteSpace(code) || code == _walkableMapCode) return;
+
+        var map = Maps.Get(code);
+        _walkableMapCode = code;
+
+        // 方法组不能直接配 ?. 使用（CS8978），先落成委托再传
+        Func<int, int, bool>? walkable = map != null ? map.IsWalkable : null;
+        _attachment?.SetStaticWalkable(walkable);
+
+        if (map != null)
+            Log?.Invoke($"[map] 已加载 {code}.map（{map.Width}×{map.Height}，{map.Format}）→ 寻路可绕开墙与关闭的门");
+        else
+            Log?.Invoke($"[map] 地图目录里没有 {code}.map（{Maps.MapDir}）→ 寻路只能走直线，墙边会卡住");
     }
 
     private readonly MapWalkController _walk;
@@ -232,6 +277,14 @@ public sealed class ClientDriverHost : IAsyncDisposable
             ? $"[host] 已加载 MapInfo：{MapInfo.Count} 条地名映射（{MapInfo.FilePath}）—— 进图判定可以比对到达图代码"
             : $"[host] 未读到 MapInfo.txt（MapDirHint=\"{Config.MapDirHint}\"，留空则按默认位置找）："
               + "进图判定退化为「换过图就算进入」，地名反查与候选清单会变弱");
+
+        Log?.Invoke(Maps != null
+            ? $"[host] 已定位地图目录 {Maps.MapDir} —— 寻路会按 .map 里的墙/门绕行"
+            : $"[host] 未找到 .map 地图目录（MapDirHint=\"{Config.MapDirHint}\"，留空则按默认位置找）："
+              + "寻路只知道视野内的动态障碍，静态墙一律当可走 —— 墙边容易卡住，建议在设置里填地图目录");
+
+        // 立刻接一次（不等 tick 定时器的 250ms），否则刚挂上时寻路走的是直线
+        SyncWalkableMap();
 
         ValidateCalibration();
     }

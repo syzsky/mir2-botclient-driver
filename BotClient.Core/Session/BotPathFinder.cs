@@ -1,3 +1,4 @@
+using System.Buffers;
 using System.Collections.Generic;
 
 namespace BotClient.Session;
@@ -46,55 +47,73 @@ public static class BotPathFinder
         if ((uint)targetX - (uint)x0 > (uint)(x1 - x0) || (uint)targetY - (uint)y0 > (uint)(y1 - y0)) return null;
         int winW = x1 - x0 + 1, winH = y1 - y0 + 1;
 
-        int[] cameFrom = new int[winW * winH];
-        int sidx = (startY - y0) * winW + (startX - x0);
-        cameFrom[sidx] = -1;
-
-        var queue = new Queue<(int X, int Y)>();
-        queue.Enqueue((startX, startY));
-        int visited = 1;
-        bool found = false;
-
-        while (queue.Count > 0)
+        // cameFrom 从 ArrayPool 租借，而不是每次 new。
+        //
+        // 为什么必须池化：窗口边长 = 2*max(32, 直线距离+16)+1，直线距离 ≥57 格时
+        // 数组就超过 85KB 落进大对象堆；而挂机是每 650ms 寻一次路（BotCombatAI 的追击节奏），
+        // 一晚几万次、单次最大可达 1024×1024 int = 4MB 的 LOH 分配，足以把 GC 拖爆。
+        //
+        // 注意**不能**靠"给窗口封顶"来解决：目标点必须落在窗口内（见上面的检查），
+        // 窗口小于直线距离会直接返回 null —— 远距离寻路就整个失效了。
+        // 所以保留窗口尺寸，只把这块内存变成复用的。
+        int cells = winW * winH;
+        int[] cameFrom = ArrayPool<int>.Shared.Rent(cells);
+        try
         {
-            var (cx, cy) = queue.Dequeue();
-            if (cx == targetX && cy == targetY) { found = true; break; }
-            if (visited >= maxVisitedNodes) break;
+            Array.Clear(cameFrom, 0, cells);       // 租来的数组内容不保证为 0
+            int sidx = (startY - y0) * winW + (startX - x0);
+            cameFrom[sidx] = -1;
 
-            for (int d = 0; d < 8; d++)
+            var queue = new Queue<(int X, int Y)>();
+            queue.Enqueue((startX, startY));
+            int visited = 1;
+            bool found = false;
+
+            while (queue.Count > 0)
             {
-                int nx = cx + DX[d];
-                int ny = cy + DY[d];
-                if (nx < x0 || nx > x1 || ny < y0 || ny > y1) continue;
-                int nidx = (ny - y0) * winW + (nx - x0);
-                if (cameFrom[nidx] != 0) continue;          // 已访问
-                if (!isWalkable(nx, ny)) continue;           // 不可走
-                // 对角移动要求两侧格子都可走(避免穿墙角)
-                if (d == 1 || d == 3 || d == 5 || d == 7)
+                var (cx, cy) = queue.Dequeue();
+                if (cx == targetX && cy == targetY) { found = true; break; }
+                if (visited >= maxVisitedNodes) break;
+
+                for (int d = 0; d < 8; d++)
                 {
-                    if (!isWalkable(cx + DX[d], cy) || !isWalkable(cx, cy + DY[d]))
-                        continue;
+                    int nx = cx + DX[d];
+                    int ny = cy + DY[d];
+                    if (nx < x0 || nx > x1 || ny < y0 || ny > y1) continue;
+                    int nidx = (ny - y0) * winW + (nx - x0);
+                    if (cameFrom[nidx] != 0) continue;          // 已访问
+                    if (!isWalkable(nx, ny)) continue;           // 不可走
+                    // 对角移动要求两侧格子都可走(避免穿墙角)
+                    if (d == 1 || d == 3 || d == 5 || d == 7)
+                    {
+                        if (!isWalkable(cx + DX[d], cy) || !isWalkable(cx, cy + DY[d]))
+                            continue;
+                    }
+                    cameFrom[nidx] = d + 1;                      // 1-based 方向
+                    queue.Enqueue((nx, ny));
+                    visited++;
                 }
-                cameFrom[nidx] = d + 1;                      // 1-based 方向
-                queue.Enqueue((nx, ny));
-                visited++;
             }
+
+            if (!found) return null;
+
+            // 回溯路径
+            var path = new List<(int X, int Y)>();
+            int x = targetX, y = targetY;
+            while (!(x == startX && y == startY))
+            {
+                path.Add((x, y));
+                int d = cameFrom[(y - y0) * winW + (x - x0)] - 1;
+                x -= DX[d];
+                y -= DY[d];
+            }
+            path.Add((startX, startY));
+            path.Reverse();
+            return path;
         }
-
-        if (!found) return null;
-
-        // 回溯路径
-        var path = new List<(int X, int Y)>();
-        int x = targetX, y = targetY;
-        while (!(x == startX && y == startY))
+        finally
         {
-            path.Add((x, y));
-            int d = cameFrom[(y - y0) * winW + (x - x0)] - 1;
-            x -= DX[d];
-            y -= DY[d];
+            ArrayPool<int>.Shared.Return(cameFrom);
         }
-        path.Add((startX, startY));
-        path.Reverse();
-        return path;
     }
 }

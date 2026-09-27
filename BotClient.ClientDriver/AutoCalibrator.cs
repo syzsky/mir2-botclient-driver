@@ -150,12 +150,17 @@ public static class AutoCalibrator
             int probeCells = round == 1 ? Math.Max(1, opt.ProbeCells) : 1;
             int offset = cell * probeCells;
 
+            // 实际用的试探方向。正方向被墙挡住时下面会改用 -offset，
+            // 那时符号比较必须跟着翻转，否则会把"成功反着走"误判成"方向相反"。
+            int probeOffset = offset;
+
             var r = await ProbeAsync(host, opt, horizontal, offset, ct);
             if (!r.Ok && probeCells > 1)
             {
                 logs.Add($"  [{axisName}] 第{round}轮：{r.Why} → 退成单格试探");
                 probeCells = 1;
                 offset = cell;
+                probeOffset = offset;
                 r = await ProbeAsync(host, opt, horizontal, offset, ct);
             }
 
@@ -171,6 +176,7 @@ public static class AutoCalibrator
 
                 logs.Add($"  [{axisName}] 第{round}轮：正方向被挡，改用反方向 {offset}px 试探");
                 r = back;
+                probeOffset = -offset;
             }
 
             int mainDelta = horizontal ? r.Dx : r.Dy;
@@ -201,19 +207,24 @@ public static class AutoCalibrator
                 continue;
             }
 
-            // 点东走西 = 方向相反：说明锚点像素与真实玩家像素差了不止一个试探距离
-            if (Math.Sign(offset) != Math.Sign(mainDelta))
+            // 点东走西 = 方向相反：说明锚点像素与真实玩家像素差了不止一个试探距离。
+            // 注意比较的是**实际试探方向** probeOffset，不是 offset：
+            // 走反方向试探时 offset 仍是正的，用它会把这个成功的反方向试探误判成"方向相反"，
+            // 于是锚点被推向错误的一侧、三轮之后放弃收敛 ——
+            // 站在墙边（正方向被挡）时 --autocalibrate 基本没法收敛，而这正是最常见的情形。
+            if (Math.Sign(probeOffset) != Math.Sign(mainDelta))
             {
                 if (anchorFix >= 3)
                 {
-                    logs.Add($"  [{axisName}] 方向相反（点 {offset}px，实测 Δ{axisTag}={mainDelta}）：锚点偏差过大，请用 --calibrate 量一次");
+                    logs.Add($"  [{axisName}] 方向相反（点 {probeOffset}px，实测 Δ{axisTag}={mainDelta}）：锚点偏差过大，请用 --calibrate 量一次");
                     return (false, cell, logs);
                 }
 
-                int shift = (int)(offset * 1.5);
+                // 修正量跟着实际试探方向走：正向试探时往前推，反向试探时往后推。
+                int shift = (int)(probeOffset * 1.5);
                 if (horizontal) v.PlayerScreenX += shift; else v.PlayerScreenY += shift;
                 anchorFix++;
-                logs.Add($"  [{axisName}] 第{round}轮：方向相反（点 {offset}px、走 Δ{axisTag}={mainDelta}）→ 锚点估计偏了，修正 {shift}px 后重试");
+                logs.Add($"  [{axisName}] 第{round}轮：方向相反（点 {probeOffset}px、走 Δ{axisTag}={mainDelta}）→ 锚点估计偏了，修正 {shift}px 后重试");
                 scale = 1.0;
                 continue;
             }

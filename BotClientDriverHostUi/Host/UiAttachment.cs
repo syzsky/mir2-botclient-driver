@@ -46,4 +46,12 @@ internal sealed class UiAttachment : ISessionAttachment
     public (int X, int Y) PlayerPosition => (_runtime.Player.PosX, _runtime.Player.PosY);
 
     public string CurrentMap => _runtime.CurrentMap;
+
+    /// <summary>
+    /// 把 .map 解析出的静态障碍（墙/关闭的门）接进运行时。
+    /// 不接的话 <c>IsWalkable</c> 恒为 null，寻路会把墙当可走 —— 撞墙时服务端不给本人回包，
+    /// 我方坐标从此永久超前，之后所有按坐标的判断全部跟着错。
+    /// </summary>
+    public void SetStaticWalkable(Func<int, int, bool>? walkable)
+        => _runtime.IsWalkable = walkable;
 }

@@ -24,19 +24,25 @@ public sealed class AutoChatManager
         var cts = new CancellationTokenSource();
         if (index == 0) _cts1 = cts; else _cts2 = cts;
 
+        // 先把 token 取出来再进循环：Stop() 是"Cancel 后立刻 Dispose"，
+        // 若后台任务恰好停在 while 条件处，cts.Token 会抛 ObjectDisposedException ——
+        // 而那个位置在 try 之外，异常会逃出 lambda，让这个 fire-and-forget 的 Task
+        // 静默变成 faulted（异常无人观察）。
+        var token = cts.Token;
+
         _ = Task.Run(async () =>
         {
-            while (!cts.Token.IsCancellationRequested)
+            while (!token.IsCancellationRequested)
             {
                 try
                 {
-                    await SendChatAsync(text, cts.Token);
-                    await Task.Delay(intervalSeconds * 1000, cts.Token);
+                    await SendChatAsync(text, token);
+                    await Task.Delay(intervalSeconds * 1000, token);
                 }
                 catch (OperationCanceledException) { break; }
                 catch { break; }
             }
-        }, cts.Token);
+        }, token);
     }
 
     public void Stop(int index)

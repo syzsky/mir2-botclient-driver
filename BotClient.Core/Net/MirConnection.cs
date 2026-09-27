@@ -189,6 +189,9 @@ public sealed class MirConnection : IAsyncDisposable
         }
     }
 
+    /// <summary>文本帧累积缓冲的上限。'#' 之后一直等不到 '!' 时用它兜底重同步，避免无界增长。</summary>
+    private const int MaxTextFrameBytes = 1 << 20;
+
     /// <summary>从缓冲提取 '#'…'!' 文本帧; 丢弃帧间噪声字节。</summary>
     private static bool ExtractTextFrame(List<byte> acc, out MirIncomingFrame frame)
     {
@@ -198,7 +201,14 @@ public sealed class MirConnection : IAsyncDisposable
         if (hashIdx > 0) acc.RemoveRange(0, hashIdx);
 
         int bangIdx = acc.IndexOf((byte)'!');
-        if (bangIdx < 0) return false; // 等更多数据
+        if (bangIdx < 0)
+        {
+            // '#' 之后迟迟等不到 '!'：缓冲区会一直追加、无任何上限。
+            // 端口/模式误判、或二进制流里恰好出现 '#' 时就会走到这里，
+            // 挂机按天算的话这是稳定增长的内存。超限就丢掉重同步。
+            if (acc.Count > MaxTextFrameBytes) acc.Clear();
+            return false; // 等更多数据
+        }
 
         string body = AsciiGetString(acc.GetRange(1, bangIdx - 1).ToArray());
         acc.RemoveRange(0, bangIdx + 1);

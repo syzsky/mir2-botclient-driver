@@ -166,7 +166,32 @@ public sealed class ProfileFrameSlicer
         int total = _p.HeaderSize + (int)len;
         if (len < 0 || len > _p.MaxFrameSize || total < _p.HeaderSize + 1 || total > _p.MaxFrameSize + _p.HeaderSize)
         {
-            DiscardedBytes++;                     // 这个位置不是真帧首：丢 1 字节继续找
+            // 这个位置不是真帧首。
+            //
+            // 以前是"丢 1 字节继续找"。线上没问题（每段 ≤ MSS，_acc 很快被排空），
+            // 但离线定界（SplitterAutoDetector.Evaluate）会把**整份样本**（≤256KB）一次喂进来，
+            // 于是逐字节丢退化成 O(n²)：最坏 262144²/2 ≈ 3.4×10^10 次字节搬移，
+            // 而且每个候选档都要跑一遍（魔数 × 3 偏移 × 2 位宽 × 2 字节序 × 3 头长，最多上百个）
+            // —— --autoframe 会卡到分钟甚至小时级。
+            //
+            // 改成直接跳到下一个魔数出现处，与"整段找不到魔数"那条分支同策略：
+            // 既然当前位置的长度字段不合法，它就不是帧首，从下一个魔数重新对齐是安全的。
+            if (_magic.Length > 0)
+            {
+                int next = IndexOf(_acc, _magic, 1);
+                if (next < 0)
+                {
+                    int keepTail = Math.Min(_acc.Count, _magic.Length - 1);
+                    int dropAll = _acc.Count - keepTail;
+                    if (dropAll > 0) { DiscardedBytes += dropAll; _acc.RemoveRange(0, dropAll); }
+                    return Step.NeedMore;
+                }
+                DiscardedBytes += next;
+                _acc.RemoveRange(0, next);
+                return Step.Retry;
+            }
+
+            DiscardedBytes++;                     // 没有魔数可依据：只能逐字节丢
             _acc.RemoveRange(0, 1);
             return Step.Retry;
         }
@@ -187,11 +212,11 @@ public sealed class ProfileFrameSlicer
         return v;
     }
 
-    private static int IndexOf(List<byte> hay, byte[] needle)
+    private static int IndexOf(List<byte> hay, byte[] needle, int from = 0)
     {
         if (needle.Length == 0) return 0;
         int last = hay.Count - needle.Length;
-        for (int i = 0; i <= last; i++)
+        for (int i = Math.Max(0, from); i <= last; i++)
         {
             if (hay[i] != needle[0]) continue;
             int j = 1;

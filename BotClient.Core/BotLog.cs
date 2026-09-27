@@ -9,7 +9,8 @@ namespace BotClient;
 /// </summary>
 public static class BotLog
 {
-    private static readonly string LogPath = Path.Combine(AppContext.BaseDirectory, "BotClient.log");
+    // 非 readonly：多开时第二个实例会退化到带 PID 的独立文件名（见静态构造）。
+    private static string LogPath = Path.Combine(AppContext.BaseDirectory, "BotClient.log");
     /// <summary>单文件上限:挂机一夜按包能写几百 MB,超限就滚成 .old 重开。</summary>
     private const long MaxBytes = 8L * 1024 * 1024;
     private static readonly object Gate = new();
@@ -38,7 +39,20 @@ public static class BotLog
         }
         catch
         {
-            // 写不了就算了
+            // 同一目录下的第二个实例会走到这里：第一个实例已经用 FileShare.ReadWrite 持有
+            // BotClient.log，而 File.WriteAllText 只允许 FileShare.Read，两边对不上就撞共享冲突。
+            // 多开是这个项目明确支持的用法（见 InstanceIdentity），不能让第二个实例直接没有日志，
+            // 所以退化成带 PID 的独立文件。
+            try
+            {
+                LogPath = Path.Combine(AppContext.BaseDirectory, $"BotClient-{Environment.ProcessId}.log");
+                File.WriteAllText(LogPath, $"=== BotClient start at {DateTime.Now:yyyy-MM-dd HH:mm:ss} (pid={Environment.ProcessId}) ===\r\n", Utf8NoBom);
+                _writer = OpenWriter();
+            }
+            catch
+            {
+                // 还是写不了就算了
+            }
         }
     }
 

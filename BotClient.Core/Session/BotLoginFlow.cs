@@ -230,7 +230,10 @@ public sealed class BotLoginFlow
             throw new InvalidOperationException($"SM_STARTPLAY body 格式异常:{decoded}");
 
         string runHost = parts[0];
-        int runPort = int.Parse(parts[1]);
+        // 同 SelectServerAsync：端口是服务端给的，畸形时 int.Parse 会抛 FormatException
+        // 打断登录链，且报错不带原文。
+        if (!int.TryParse(parts[1], out int runPort))
+            throw new InvalidOperationException($"SM_STARTPLAY body 里的端口不是数字:{decoded}");
         _session.SetRunGate(runHost, runPort);
         Log?.Invoke($"[selchr] SM_STARTPLAY runGate={runHost}:{runPort}");
 

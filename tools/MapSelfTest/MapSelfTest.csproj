@@ -1,0 +1,26 @@
+<Project Sdk="Microsoft.NET.Sdk">
+
+  <!-- 离线自测：不连客户端、不抓包、不读本机服务端文件。
+       ① 用**合成**的 .map 文件验证「地图解析 + 可走性判定 + 地图库缓存」这条链路；
+       ② 源码护栏：确认静态可走性真的被接进了运行时（BotRuntime.IsWalkable），
+          防止这条接线被误删 —— 删掉它的后果是寻路把墙当可走，撞墙后坐标永久失同步，
+          而且不会有任何报错。 -->
+  <PropertyGroup>
+    <OutputType>Exe</OutputType>
+    <TargetFramework>net8.0</TargetFramework>
+    <Nullable>enable</Nullable>
+    <LangVersion>latest</LangVersion>
+    <ImplicitUsings>enable</ImplicitUsings>
+    <EnableDefaultCompileItems>false</EnableDefaultCompileItems>
+    <AssemblyName>MapSelfTest</AssemblyName>
+    <RootNamespace>MapSelfTest</RootNamespace>
+  </PropertyGroup>
+
+  <ItemGroup>
+    <Compile Include="Program.cs" />
+    <Compile Include="../../BotClient.Core/Assets/MirMapFormat.cs" />
+    <Compile Include="../../BotClient.Core/Assets/MirMapFile.cs" />
+    <Compile Include="../../BotClient.Core/Assets/MirMapLibrary.cs" />
+  </ItemGroup>
+
+</Project>

@@ -11,6 +11,7 @@
   "CaptureDevice": "",
   "ReadOnlySniff": true,
   "MapDirHint": "",
+  "_说明_MapDirHint": "服务端 .map 目录（例 D:\\MirServer\\Mir200\\Map）。填了寻路才会读地图里的墙与关闭的门；留空则按默认位置找（exe 同目录的 Map、D:\\MirServer\\Mir200\\Map），一处都找不到时寻路把静态墙当可走，墙边会卡住。启动日志会写明实际用了哪个目录。",
 
   "_说明_Framing": "换服适配用。留 null = 自动（先按默认经典定界跑，首启日志会给出探测报告）；跑一次 --autoframe 命中后会写回这里，下次启动直接生效，不需要改代码重编译。",
   "Framing": null,

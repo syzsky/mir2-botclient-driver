@@ -50,8 +50,14 @@ dotnet publish BotClientDriverHost/BotClientDriverHost.csproj -r win-x64 -c Rele
    宿主会**弹出官方交互式安装向导**（免费版 Npcap 不支持 `/S` 静默安装，装完自动继续）；也可手动
    `BotClientDriverHost.exe --install-npcap`。安装必须带 WinPcap 兼容模式
    （Npcap 是内核驱动，无法内嵌进单文件 exe，详见 `BotClient.ClientDriver/README.md` 第十一节）
-3. 游戏客户端已启动并**进入游戏**（本程序不改客户端任何文件）
-4. 首次运行先校准：`BotClientDriverHost.exe --calibrate`
+3. **地图目录（强烈建议填）**：`clientdriver.json` 的 `MapDirHint` 指向服务端的 `.map` 目录
+   （例：`D:\MirServer\Mir200\Map`）。
+   · 填了：寻路会读 `.map` 里的**墙与关闭的门**，能绕开障碍；
+   · 不填：按默认位置找（exe 同目录的 `Map`、以及 `D:\MirServer\Mir200\Map`），
+     一处都找不到时寻路只知道视野内的动态障碍，**静态墙一律当可走** —— 墙边会卡住。
+     启动日志会明确写出到底用了哪个目录（`[host] 已定位地图目录 …`）。
+4. 游戏客户端已启动并**进入游戏**（本程序不改客户端任何文件）
+5. 首次运行先校准：`BotClientDriverHost.exe --calibrate`
 
 ## 用法
 

@@ -49,6 +49,9 @@ jobs:
       - name: 图例视觉核对自测（左下角读数 / 只在有依据时报差异 / 合规护栏）
         run: dotnet run --project tools/CornerReadSelfTest/CornerReadSelfTest.csproj -c Release -v minimal
 
+      - name: 地图链路自测（合成 .map 解析 / 可走性 / 地图库缓存 / 接线护栏）
+        run: dotnet run --project tools/MapSelfTest/MapSelfTest.csproj -c Release -v minimal
+
       - name: 发布 win-x64 单文件
         run: >
           dotnet publish BotClientDriverHost/BotClientDriverHost.csproj
