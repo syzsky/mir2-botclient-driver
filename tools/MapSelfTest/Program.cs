@@ -146,6 +146,17 @@ try
         Check(ui.Contains("SetStaticWalkable") && ui.Contains("_runtime.IsWalkable"),
               "图形宿主的 UiAttachment 实现了接线");
 
+        // MapWidth/MapHeight 的注释写着"只在真的读到 .map 时才非 0"，但长期无人赋值 ——
+        // 于是 PathfindWidth/Height 永远退回默认边长 1024，在 700×700 的图上偏大。
+        Check(cli.Contains("_runtime.MapWidth = mapWidth") && cli.Contains("_runtime.MapHeight = mapHeight"),
+              "地图尺寸也接进了运行时（PathfindWidth/Height 才有精确值）");
+        Check(ui.Contains("_runtime.MapWidth = mapWidth") && ui.Contains("_runtime.MapHeight = mapHeight"),
+              "图形宿主同样接了地图尺寸");
+
+        string runtime = File.ReadAllText(Path.Combine(root, "BotClient.Core", "Session", "BotRuntime.cs"));
+        Check(runtime.Contains("public Func<int, int, bool>? IsWalkable;"),
+              "运行时保留了可走性注入点");
+
         string finder = File.ReadAllText(Path.Combine(root, "BotClient.Core", "Session", "BotPathFinder.cs"));
         Check(finder.Contains("ArrayPool<int>.Shared.Rent"), "寻路用池化缓冲（不再每次 new 大数组）");
     }

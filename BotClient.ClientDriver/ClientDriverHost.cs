@@ -43,14 +43,18 @@ public interface ISessionAttachment
     string CurrentMap { get; }
 
     /// <summary>
-    /// 把静态地图可走性接进运行时（落到 <c>BotRuntime.IsWalkable</c>）。
+    /// 把静态地图可走性与地图尺寸接进运行时（落到 <c>BotRuntime.IsWalkable</c> /
+    /// <c>MapWidth</c> / <c>MapHeight</c>）。
     ///
     /// 不接这一步的后果：<c>IsWalkable</c> 恒为 null，<c>EffectiveWalkable</c> 会把每个格子
     /// 都判成可走，BFS 只会走直线 —— 墙一挡就撞墙，而服务端对撞墙**不给本人任何回包**，
     /// 我方坐标从此永久超前，之后所有按坐标的判断全部跟着错。
-    /// 传 null 表示"没有地图数据"，运行时退回全可走。
+    /// 尺寸不接的后果：<c>PathfindWidth/Height</c> 永远退回默认边长 1024，
+    /// 在 700×700 的图上窗口偏大、越界区全判不可走。
+    ///
+    /// 传 0/0 + null 表示"没有地图数据"，运行时退回全可走 + 默认边长。
     /// </summary>
-    void SetStaticWalkable(Func<int, int, bool>? walkable);
+    void SetStaticWalkable(int mapWidth, int mapHeight, Func<int, int, bool>? walkable);
 }
 
 /// <summary>
@@ -143,7 +147,7 @@ public sealed class ClientDriverHost : IAsyncDisposable
 
         // 方法组不能直接配 ?. 使用（CS8978），先落成委托再传
         Func<int, int, bool>? walkable = map != null ? map.IsWalkable : null;
-        _attachment?.SetStaticWalkable(walkable);
+        _attachment?.SetStaticWalkable(map?.Width ?? 0, map?.Height ?? 0, walkable);
 
         if (map != null)
             Log?.Invoke($"[map] 已加载 {code}.map（{map.Width}×{map.Height}，{map.Format}）→ 寻路可绕开墙与关闭的门");
