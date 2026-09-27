@@ -183,23 +183,51 @@ public static class TcpTableReader
     }
 
     /// <summary>判断地址是否为本机/回环（这类连接不是"客户端 ↔ 外网服务端"）。</summary>
+    // 本机地址集缓存。
+    //
+    // 为什么必须缓存：Dns.GetHostAddresses(Dns.GetHostName()) 是一次**同步 DNS 解析**，
+    // 而本方法在 Discover 里对每条连接各调一次、在 PacketSniffer 的每秒刷新里也要对每条
+    // 连接调一次 —— 等于周期性地把抓包线程/定时器线程阻塞在 DNS 上。
+    // 本机地址几乎不变（换网/DHCP 续约才会变），缓存 60 秒足够。
+    private static IPAddress[]? _localAddrs;
+    private static DateTime _localAddrsAt = DateTime.MinValue;
+    private static readonly object _localAddrsLock = new();
+
+    private static IPAddress[] LocalAddresses()
+    {
+        lock (_localAddrsLock)
+        {
+            if (_localAddrs != null && (DateTime.UtcNow - _localAddrsAt).TotalSeconds < 60)
+                return _localAddrs;
+        }
+
+        IPAddress[] addrs;
+        try
+        {
+            addrs = Dns.GetHostAddresses(Dns.GetHostName());
+        }
+        catch
+        {
+            addrs = Array.Empty<IPAddress>();   // DNS 不可用时退化为"只判回环"
+        }
+
+        lock (_localAddrsLock)
+        {
+            _localAddrs = addrs;
+            _localAddrsAt = DateTime.UtcNow;
+        }
+        return addrs;
+    }
+
     public static bool IsLocalOrLoopback(string addr)
     {
         if (!IPAddress.TryParse(addr, out var ip)) return true;
         if (IPAddress.IsLoopback(ip)) return true;
         if (addr == "0.0.0.0") return true;
 
-        try
+        foreach (var l in LocalAddresses())
         {
-            var locals = Dns.GetHostAddresses(Dns.GetHostName());
-            foreach (var l in locals)
-            {
-                if (l.Equals(ip)) return true;
-            }
-        }
-        catch
-        {
-            // DNS 不可用时退化为"只判回环"
+            if (l.Equals(ip)) return true;
         }
 
         return false;

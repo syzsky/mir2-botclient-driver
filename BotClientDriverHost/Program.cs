@@ -1019,7 +1019,7 @@ internal sealed class Cli
                     cli.DriverPath = Path.GetFullPath(Next());
                     break;
                 case "--fight-x":
-                    cli.FightPointX = int.Parse(Next());
+                    cli.FightPointX = NextInt();
                     break;
                 case "--fight-y":
                     cli.FightPointY = NextInt();
@@ -1034,7 +1034,7 @@ internal sealed class Cli
                     cli.HuntMenu = Next();
                     break;
                 case "--hunt-level":
-                    cli.HuntLevel = int.Parse(Next());
+                    cli.HuntLevel = NextInt();
                     break;
                 case "--hunt-depth":
                     cli.HuntDepth = NextInt();

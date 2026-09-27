@@ -546,6 +546,14 @@ public sealed class ClientDriverHost : IAsyncDisposable
         lines.Add($"多开标识: {Identity.Describe()}（服务器名-区名-角色名；仅用于区分实例）");
         lines.Add($"窗口: {(_driver.IsAttached ? "已附着" : "未附着")}");
         lines.Add($"主视图校准: {(Config.View.IsCalibrated ? "OK" : "缺失")}");
+
+        // 边缘滚动补偿没有实现。与其让用户对着"点东却走东北"猜半天，
+        // 不如在自检报告里直接把话说清楚（AutoCalibrator 通常已把它写回 true，
+        // 所以这条只在用户手工改成 false 时才会出现）。
+        if (!Config.View.PlayerAlwaysCentered)
+            lines.Add("主视图模式: 边缘滚动视图 —— 本版本只实现了「玩家恒居中」的换算，"
+                    + "边缘滚动补偿未实现；走到地图边缘后格↔像素会系统性偏移。"
+                    + "建议把 clientdriver.json 的 View.PlayerAlwaysCentered 改回 true");
         lines.Add($"小地图校准: {(Config.MiniMap.IsCalibrated ? "OK" : "缺失")}");
         lines.Add($"对话框校准: {(Config.Dialog.IsCalibrated ? "OK" : "缺失")}");
         lines.Add($"背包校准: {(Config.Bag.IsCalibrated ? "OK" : "缺失（使用快捷键喝药时不需要）")}");

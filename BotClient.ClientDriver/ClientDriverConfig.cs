@@ -187,7 +187,14 @@ public sealed class ViewCalibration
     public int CellWidth { get; set; } = 48;
     public int CellHeight { get; set; } = 32;
 
-    /// <summary>视图是否随玩家滚动：true 时玩家恒在 PlayerScreenX/Y（默认）；false 时按 EdgeScroll 处理。</summary>
+    /// <summary>
+    /// 视图模式：true = 玩家恒定在 PlayerScreenX/Y（默认，传奇常规行为）。
+    ///
+    /// **注意**：false（边缘滚动视图）目前**没有实现补偿** —— <c>ScreenMapper</c> 只按
+    /// "玩家恒居中"计算格↔像素，<c>AutoCalibrator</c> 还会把它无条件写回 true。
+    /// 设成 false 不会切换算法，只会让坐标换算与客户端实际显示不符
+    /// （表现为"点东走东北 / 原地不动"）。驱动宿主的自检报告会就此给出警告。
+    /// </summary>
     public bool PlayerAlwaysCentered { get; set; } = true;
 
     public bool IsCalibrated => ViewWidth > 0 && ViewHeight > 0 && PlayerScreenX > 0 && PlayerScreenY > 0;
