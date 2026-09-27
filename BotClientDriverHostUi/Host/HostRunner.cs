@@ -1,4 +1,5 @@
 using System.IO;
+using System.Windows;
 using BotClient.ClientDriver;
 using BotClient.ClientDriver.Hunt;
 using BotClient.ClientDriver.Sniff;
@@ -8,6 +9,7 @@ using BotClient.Net;
 using BotClient.Session;
 using BotClient.Session.Combat;
 using BotClientDriverHost;
+using BotClientDriverHostUi.Views;
 
 namespace BotClientDriverHostUi.Host;
 
@@ -224,6 +226,15 @@ public sealed class HostRunner
         var attachment = new UiAttachment(session, runtime);
         attachment.Log += m => Emit("[ui] " + m);
         host.Attach(attachment);
+
+        // 服务端索要密码（!Setup.txt 的仓库/动作保护）时必须应答，否则服务端把所有动作
+        // 整包丢弃 —— 界面上仍显示"挂机中"，角色却一动不动。按原设计密码不落盘，弹窗现问现发。
+        runtime.PasswordRequested += () => OnPasswordRequested(runtime, ct);
+
+        // 掉线要让用户看得见：收包泵只是静静结束，不提示的话界面会停在最后一帧、以为还在挂机。
+        session.Disconnected += () =>
+            Emit("[ui] 与客户端的连接已断开（小退 / 被服务端踢 / 网络掉线）——挂机已停止产生任何动作");
+
         runtime.NpcMessage += (id, text) => host.FeedNpcDialog(id, text);
         runtime.SystemMessage += text => host.FeedSystemMessage(text);
 
@@ -1082,6 +1093,42 @@ public sealed class HostRunner
         }
 
         StatusChanged?.Invoke();
+    }
+
+    /// <summary>
+    /// 服务端要求输入密码（SM_PASSWORD）时弹窗现问现发。
+    ///
+    /// 为什么必须应答：服务端在这种情况下会把 m_boCanWalk/Run/Hit/Spell/UseItem/Deal/Drop
+    /// 全部置 False，所有动作**整包丢弃、不排队**，而且不给任何错误回包 ——
+    /// 界面上仍然显示"挂机中"，角色却一动不动。这是整套静默闸门里最难发现的一种。
+    /// 密码不落盘，用完即弃。
+    /// </summary>
+    private void OnPasswordRequested(BotRuntime runtime, CancellationToken ct)
+    {
+        var app = System.Windows.Application.Current;
+        if (app?.Dispatcher == null) return;
+
+        _ = app.Dispatcher.InvokeAsync(async () =>
+        {
+            Emit("[ui] 服务端要求输入密码（仓库/动作保护）—— 弹窗输入后即可解锁行走/攻击/用药");
+
+            var dlg = new PasswordPromptWindow { Owner = app.MainWindow };
+            if (dlg.ShowDialog() != true || string.IsNullOrEmpty(dlg.Password))
+            {
+                Emit("[ui] 未提供密码：角色将无法行走/攻击/用药，直到输入为止");
+                return;
+            }
+
+            try
+            {
+                await runtime.SendPasswordAsync(dlg.Password, ct).ConfigureAwait(true);
+                Emit("[ui] 已应答服务端密码框：仓库/动作保护已解锁，角色可以正常动作");
+            }
+            catch (Exception ex)
+            {
+                Emit("[ui] 应答服务端密码框失败: " + ex.Message);
+            }
+        });
     }
 
     private void Emit(string message) => Log?.Invoke(message);

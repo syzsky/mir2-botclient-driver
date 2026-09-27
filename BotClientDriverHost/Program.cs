@@ -511,6 +511,15 @@ internal static class Program
         host.Credentials.Captured += cred =>
             Say($"[host] 已复用客户端登录凭据：{cred.Describe()}（仅存内存，不写入任何文件）");
 
+        // 服务端索要密码（!Setup.txt 的仓库/动作保护）时必须应答，否则服务端把
+        // m_boCanWalk/Run/Hit/Spell/UseItem 全置 False，所有动作被**整包丢弃** ——
+        // 表现是"日志显示挂机中、角色却一动不动"，且没有任何错误回包。
+        runtime.PasswordRequested += () => _ = AnswerPasswordAsync(runtime, cli.Password, Say, ct);
+
+        // 掉线要让用户看得见：收包泵只是静静结束，不提示的话界面会停在最后一帧、以为还在挂机。
+        session.Disconnected += () =>
+            Say("[host] 与客户端的连接已断开（小退 / 被服务端踢 / 网络掉线）——挂机已停止产生任何动作");
+
         host.Attach(new Attachment(session, runtime));
         runtime.NpcMessage += (id, text) => host.FeedNpcDialog(id, text);
         runtime.SystemMessage += text => host.FeedSystemMessage(text);
@@ -747,6 +756,12 @@ internal static class Program
         var host = new ClientDriverHost(cfg);
         host.Log += Say;
         host.Identity = Identity;
+
+        // 同复用模式：服务端索要密码必须应答，否则所有动作被服务端整包丢弃
+        runtime.PasswordRequested += () => _ = AnswerPasswordAsync(runtime, cli.Password, Say, ct);
+        session.Disconnected += () =>
+            Say("[host] 与客户端的连接已断开（小退 / 被服务端踢 / 网络掉线）——挂机已停止产生任何动作");
+
         host.Attach(new Attachment(session, runtime));
         runtime.NpcMessage += (id, text) => host.FeedNpcDialog(id, text);
         runtime.SystemMessage += text => host.FeedSystemMessage(text);
@@ -838,6 +853,39 @@ internal static class Program
     {
         string tag = Identity.Prefix;
         Console.WriteLine($"{DateTime.Now:HH:mm:ss.fff} {(tag.Length > 0 ? tag + " " : string.Empty)}{message}");
+    }
+
+    /// <summary>
+    /// 应答服务端的 SM_PASSWORD 密码框（!Setup.txt 的仓库/动作保护）。
+    ///
+    /// 为什么必须应答：服务端在这种情况下会把 m_boCanWalk/Run/Hit/Spell/UseItem/Deal/Drop
+    /// 全部置 False，所有动作**整包丢弃、不排队**。表现是"日志显示挂机中、角色却一动不动"，
+    /// 而且不会有任何错误回包 —— 是这一整套闸门里最难发现的一种。
+    ///
+    /// 密码来源与登录一致（--password 或环境变量 BOT_PASSWORD），不落盘。
+    /// </summary>
+    private static async Task AnswerPasswordAsync(BotRuntime runtime, string? cliPassword, Action<string> say, CancellationToken ct)
+    {
+        string? pw = string.IsNullOrEmpty(cliPassword)
+            ? Environment.GetEnvironmentVariable("BOT_PASSWORD")
+            : cliPassword;
+
+        if (string.IsNullOrEmpty(pw))
+        {
+            say("[host] 服务端要求输入密码（仓库/动作保护），但本次没有可用密码 —— "
+              + "请用 --password 或环境变量 BOT_PASSWORD 提供；在此之前角色无法行走/攻击/用药。");
+            return;
+        }
+
+        try
+        {
+            await runtime.SendPasswordAsync(pw, ct).ConfigureAwait(false);
+            say("[host] 已应答服务端密码框：仓库/动作保护已解锁，角色可以正常动作");
+        }
+        catch (Exception ex)
+        {
+            say($"[host] 应答服务端密码框失败: {ex.Message}");
+        }
     }
 }
 

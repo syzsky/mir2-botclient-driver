@@ -129,6 +129,54 @@ else
     }
 }
 
+// ---------------------------------------------------------------- 6. 源码护栏：密码应答与掉线提示确实被接上
+//
+// 这两条都属于"写好了但没人订阅"的类型，而且**编译器不会报警**（private 方法未被调用不产生警告），
+// 所以必须用护栏钉住 —— 它们各自对应一个会让挂机静默失效的后果：
+//   · 不应答 SM_PASSWORD → 服务端把 m_boCanWalk/Hit/Spell/UseItem 全置 False，所有动作整包丢弃，
+//     界面仍显示"挂机中"、角色却一动不动；
+//   · 不订阅 Disconnected → 掉线后界面停在最后一帧，用户以为还在挂机。
+Section("6. 源码护栏：密码应答 / 掉线提示已接线");
+
+{
+    string? root = FindRepoRoot(AppContext.BaseDirectory);
+    if (root is null)
+    {
+        Console.WriteLine("  [SKIP] 未定位到仓库根目录（脱离仓库运行），跳过源码护栏");
+    }
+    else
+    {
+        string cliPath = Path.Combine(root, "BotClientDriverHost", "Program.cs");
+        string uiPath = Path.Combine(root, "BotClientDriverHostUi", "Host", "HostRunner.cs");
+
+        Check("找到无界面宿主 Program.cs", File.Exists(cliPath), cliPath);
+        Check("找到图形宿主 HostRunner.cs", File.Exists(uiPath), uiPath);
+
+        if (File.Exists(cliPath))
+        {
+            string cli = File.ReadAllText(cliPath);
+            Check("无界面宿主订阅了 PasswordRequested", cli.Contains("PasswordRequested +="));
+            Check("无界面宿主订阅了 Disconnected", cli.Contains("Disconnected +="));
+            Check("无界面宿主实现了密码应答（密码取自 --password / BOT_PASSWORD）",
+                cli.Contains("AnswerPasswordAsync") && cli.Contains("BOT_PASSWORD"));
+            // 复用模式与登录模式是两条独立入口，各自都要接
+            int hooks = cli.Split("PasswordRequested +=").Length - 1;
+            Check("两个入口（复用模式 / 登录模式）都接了密码应答", hooks >= 2, $"实际 {hooks} 处");
+        }
+
+        if (File.Exists(uiPath))
+        {
+            string ui = File.ReadAllText(uiPath);
+            Check("图形宿主订阅了 PasswordRequested", ui.Contains("PasswordRequested +="));
+            Check("图形宿主订阅了 Disconnected", ui.Contains("Disconnected +="));
+            Check("图形宿主有密码输入弹窗", ui.Contains("PasswordPromptWindow"));
+
+            string dlg = Path.Combine(root, "BotClientDriverHostUi", "Views", "PasswordPromptWindow.xaml");
+            Check("密码弹窗的 XAML 存在", File.Exists(dlg), dlg);
+        }
+    }
+}
+
 Console.WriteLine();
 Console.WriteLine($"—— ClientFollowSelfTest 结果: {pass} 通过 / {fail} 失败 ——");
 if (fail > 0)
