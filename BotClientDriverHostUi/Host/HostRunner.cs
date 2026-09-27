@@ -33,6 +33,15 @@ public sealed class HostRunner
     /// <summary>"等待客户端连接"状态下，上一次真正尝试跟随的 tick 计数（避免每 500ms 都全量扫进程）。</summary>
     private int _followTicks;
 
+    /// <summary>左下角图例的只读视觉读数（截屏 + 系统 OCR）。懒加载：第一次用到才建 OCR 引擎。</summary>
+    private Vision.ScreenCornerReader? _cornerReader;
+
+    /// <summary>视觉核对互斥：同一时刻只跑一次（周期 + 换图 + 手动可能撞车）。</summary>
+    private int _cornerBusy;
+
+    /// <summary>上一次核对时间，用于按 IntervalSeconds 节流。</summary>
+    private DateTime _lastCornerUtc = DateTime.MinValue;
+
     public HostRunner(string baseDir)
     {
         _baseDir = baseDir;
@@ -137,7 +146,17 @@ public sealed class HostRunner
         runtime.SystemMessage += m => Emit("[系统] " + m);
         runtime.ChatMessage += m => Emit("[聊天] " + m);
         runtime.MapChanged += () =>
+        {
             Emit($"[地图] {runtime.CurrentMap}｜{runtime.Player.MapName}｜({runtime.Player.PosX},{runtime.Player.PosY})");
+            // 换图是"数据源最容易出错"的时刻（编号变了、图例重画），顺手做一次只读视觉核对：
+            // 画面还没重画完（有淡入），延后 800ms 再读。
+            _ = Task.Run(async () =>
+            {
+                try { await Task.Delay(800).ConfigureAwait(false); }
+                catch { /* 忽略 */ }
+                await CrossCheckCornerAsync("换图", force: false).ConfigureAwait(false);
+            });
+        };
         runtime.Died += () => Emit("[危险] 角色死亡");
         runtime.LevelUp += lv => Emit($"[成长] 等级 → {lv}");
         runtime.StateChanged += OnPlayerStateChanged;
@@ -482,6 +501,106 @@ public sealed class HostRunner
 
     /// <summary>是否处于“等待客户端连接”状态（启动时没识别到目标，挂机在等客户端）。</summary>
     public bool AwaitClientFollow => _awaitClientFollow;
+
+    /// <summary>状态栏"视觉核对"芯片文案：一致 / 有差异 / 不可读 / 未绑定 / 已关闭。</summary>
+    public string CornerChipText { get; private set; } = "—";
+
+    /// <summary>最近一次核对结论（悬浮提示/日志用）。</summary>
+    public string? LastCornerCheck { get; private set; }
+
+    // ------------------------------------------------------------------ 视觉核对（只读）
+
+    /// <summary>
+    /// 界面定时器每 500ms 调一次：按配置间隔做周期核对（内部节流，未到点直接返回）。
+    /// 只在已开始挂机后自动跑 —— 等待客户端阶段由用户点按钮手动核对。
+    /// </summary>
+    public void MaybePeriodicCornerCheck()
+    {
+        CornerOcrOptions o = Driver.Ocr ?? new CornerOcrOptions();
+        if (!o.Enabled || o.IntervalSeconds <= 0) return;
+        if (Runtime == null) return;
+        if ((DateTime.UtcNow - _lastCornerUtc).TotalSeconds < o.IntervalSeconds) return;
+        _ = Task.Run(() => CrossCheckCornerAsync("周期", force: false));
+    }
+
+    /// <summary>手动核对（界面按钮）：无视间隔与总开关，立刻跑一次。</summary>
+    public void RequestCornerCheck() => _ = Task.Run(() => CrossCheckCornerAsync("手动", force: true));
+
+    /// <summary>
+    /// 读一次画面左下角并与嗅探数据比对。**只写日志与状态栏，不改任何动作**。
+    /// 失败一律降级成"不可读 + 原因"，绝不抛异常影响挂机主流程。
+    /// </summary>
+    public async Task CrossCheckCornerAsync(string reason, bool force)
+    {
+        CornerOcrOptions o = Driver.Ocr ?? new CornerOcrOptions();
+        if (!o.Enabled && !force)
+        {
+            CornerChipText = "已关闭";
+            return;
+        }
+        if (Interlocked.Exchange(ref _cornerBusy, 1) == 1) return;
+
+        try
+        {
+            long hwnd = Driver.TargetHwnd;
+            if (hwnd == 0)
+            {
+                CornerChipText = "未绑定";
+                LastCornerCheck = "未绑定客户端窗口，视觉核对跳过";
+                if (force) Emit("[核对] 未绑定客户端窗口：先「扫描客户端」或让宿主跟随上客户端后再试");
+                return;
+            }
+
+            _cornerReader ??= new Vision.ScreenCornerReader();
+            if (!_cornerReader.Available)
+            {
+                CornerChipText = "无 OCR";
+                LastCornerCheck = _cornerReader.EngineNote;
+                Emit("[核对] 无法启用视觉核对：" + _cornerReader.EngineNote);
+                return;
+            }
+
+            _lastCornerUtc = DateTime.UtcNow;
+            BotClient.Vision.CornerReading reading = await _cornerReader.ReadAsync(
+                hwnd, o.BandWidth, o.BandHeight, o.LeftOffset, o.BottomOffset, o.Scale).ConfigureAwait(false);
+
+            if (!reading.Readable)
+            {
+                CornerChipText = "不可读";
+                LastCornerCheck = _cornerReader.LastError ?? "区域无文字";
+                Emit($"[核对] ({reason}) 画面读数不可用：{LastCornerCheck}");
+                return;
+            }
+
+            BotRuntime? rt = Runtime;
+            if (rt == null)
+            {
+                CornerChipText = reading.Describe();
+                LastCornerCheck = reading.Describe();
+                Emit($"[核对] ({reason}) 仅画面读数：{reading.Describe()}（尚未开始挂机，无嗅探数据可比对）");
+                return;
+            }
+
+            BotPlayerState p = rt.Player;
+            string expectMap = p.MapName;   // MapInfo 没读到时它就是编号，比对逻辑里两者都会试
+            BotClient.Vision.CornerCheck check = BotClient.Vision.MapCornerParser.Compare(
+                reading, expectMap, rt.CurrentMap, p.PosX, p.PosY, o.PosTolerance);
+
+            CornerChipText = check.Ok ? "一致" : (check.Verdict == BotClient.Vision.CornerVerdict.NotReadable ? "不可读" : "有差异");
+            LastCornerCheck = check.Describe();
+            Emit($"[核对] ({reason}) {check.Describe()}");
+        }
+        catch (Exception ex)
+        {
+            CornerChipText = "异常";
+            LastCornerCheck = ex.Message;
+            Emit("[核对] 视觉核对异常: " + ex.Message);
+        }
+        finally
+        {
+            Interlocked.Exchange(ref _cornerBusy, 0);
+        }
+    }
 
     /// <summary>
     /// 界面定时器调用（500ms 一次）：处于“等待客户端”状态时，每约 5 秒做一次**只读**重试跟随，

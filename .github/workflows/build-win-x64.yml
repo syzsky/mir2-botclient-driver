@@ -46,6 +46,9 @@ jobs:
       - name: 离线客户端跟随自测（未挂机也能识别 / 等待客户端自动跟上）
         run: dotnet run --project tools/ClientFollowSelfTest/ClientFollowSelfTest.csproj -c Release -v minimal
 
+      - name: 图例视觉核对自测（左下角读数 / 只在有依据时报差异 / 合规护栏）
+        run: dotnet run --project tools/CornerReadSelfTest/CornerReadSelfTest.csproj -c Release -v minimal
+
       - name: 发布 win-x64 单文件
         run: >
           dotnet publish BotClientDriverHost/BotClientDriverHost.csproj

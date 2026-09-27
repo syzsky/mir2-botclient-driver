@@ -34,6 +34,8 @@
           <Button x:Name="ScanClientsBtn" Content="扫描客户端" Click="OnScanClientsClick" />
           <Button x:Name="SelfCheckBtn" Content="环境自检" Click="OnSelfCheckClick" />
           <Button x:Name="NpcapBtn" Content="抓包检测" Click="OnNpcapClick" />
+          <Button x:Name="CornerCheckBtn" Content="视觉核对" Click="OnCornerCheckClick"
+                  ToolTip="只读截取画面左下角的地图/坐标，和嗅探数据比对（不改任何动作，仅用于确认嗅探是否可信）" />
           <Button x:Name="SettingsBtn" Content="设置 F8" Click="OnSettingsClick" />
           <Button x:Name="ClearLogBtn" Content="清空日志" Click="OnClearLogClick" />
           <Button x:Name="AboutBtn" Content="帮助" Click="OnAboutClick" />
@@ -108,6 +110,13 @@
           <StackPanel Orientation="Horizontal">
             <TextBlock Text="校准" Foreground="#FF8A8A8A" />
             <TextBlock x:Name="ChipCal" Text="—" Margin="5,0,0,0" Foreground="#FFE8E8E8" />
+          </StackPanel>
+        </Border>
+        <Border Style="{StaticResource ChipBorder}"
+                ToolTip="画面左下角读数与嗅探数据的比对结果：一致 / 有差异 / 不可读（只读校验，不影响动作）">
+          <StackPanel Orientation="Horizontal">
+            <TextBlock Text="视觉核对" Foreground="#FF8A8A8A" />
+            <TextBlock x:Name="ChipCorner" Text="—" Margin="5,0,0,0" Foreground="#FFE8E8E8" />
           </StackPanel>
         </Border>
       </StackPanel>

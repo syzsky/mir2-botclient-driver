@@ -87,6 +87,7 @@ Bot 只负责点地图、按键，节流由游戏自身的行走/攻击冷却天
 | `Input/ClientActionDriver.cs` | 意图 → 具体操作（点击/按键），含动作确认 |
 | `Input/ClientInputBridge.cs` | 兜底通道：未接管动作**只计数不发送**，把漏洞变可见 |
 | `CmdCatalog.cs` | 反射取 Core 的 CM_/SM_ 命令码，取不到可手工覆盖 |
+| `BotClient.Core/Vision/MapCornerParser.cs` | 画面左下角图例读数解析 + 与嗅探数据比对（纯逻辑、可离线自测；截图/OCR 在图形宿主侧，见第十二节） |
 | `CorePatch.md` | **Core 侧改造说明（必读，改完才能跑）** |
 | `BotClient.Core/Human/HumanTiming.cs` | 拟人时序：高斯 / 右偏长尾 / 概率停顿 / 疲劳曲线（随机只做加法，不破服务端下限） |
 | `BotClient.Core/Human/HumanMousePath.cs` | 鼠标轨迹：贝塞尔 + smoothstep 加减速 + 随机弯曲 + 概率过冲回修 |
@@ -444,3 +445,61 @@ npcap\
 `build-win-x64` 在发布完成后尝试从 `https://npcap.com/dist/` 拉取最新官方安装器放进
 `publish/npcap/`（`continue-on-error`：拉不到不阻塞出包，宿主降级为提示用户手动放置）。
 冒烟新增用例：`--install-npcap` 指向不存在的安装器时必须友好失败（不得抛未处理异常）。
+
+---
+
+## 十二、画面左下角读数（只读交叉校验）
+
+### 12.1 解决什么问题
+
+嗅探链路的正确性此前只能靠"行为看起来正常"来间接判断：跨 TCP 段重组错位、MapInfo 读错表
+这类故障，表现是"挂机慢慢跑偏"，排障很费时间。屏幕上现成的小图例（`[地图名] (x,y)`）
+是**同一份事实的旁证**，把它读出来和嗅探数据比对，故障就从"跑偏了才发现"变成"当场报差异"。
+
+### 12.2 分工（为什么这样切）
+
+| 环节 | 位置 | 说明 |
+| --- | --- | --- |
+| 取样+识别 | `BotClientDriverHostUi/Vision/ScreenCornerReader.cs` | 只读像素拷贝（`CopyFromScreen`）+ WinRT OCR；平台相关，故放在宿主侧 |
+| 解析+比对 | `BotClient.Core/Vision/MapCornerParser.cs` | 纯字符串逻辑：`Parse(ocrText)` / `Compare(...)`，跨平台、可离线自测 |
+| 调度 | `BotClientDriverHostUi/Host/HostRunner.cs` | 手动触发 / 换图后触发 / 低频周期；结果只进日志与状态栏芯片 |
+
+解析与比对之所以不放在宿主侧：一是能进 CI 离线跑断言（不需要游戏、不需要 Windows），
+二是"只在有依据时才报差异"这条策略值得被测试钉住。
+
+### 12.3 判读规则（不误报优先）
+
+- 嗅探侧有中文名（`MapInfo.txt` 读到了）而画面显示别的名字 → **有差异**（真故障）；
+- 嗅探侧只有地图编号、画面是中文名 → **未比对**（没有能力判定，不喊狼来了）；画面显示编号则可按编号比对；
+- 画面一片空白/噪声 → **不可读**，日志给出原因（窗口遮挡、OCR 语言包缺失、取样框落空）；
+- 坐标差异在容差内（默认 2 格）算一致——OCR 对易混字符偶尔会差一格。
+
+### 12.4 配置（`clientdriver.json` 的 `Ocr` 段）
+
+| 字段 | 默认 | 说明 |
+| --- | --- | --- |
+| `Enabled` | `true` | 整段开关（关掉即完全不截屏、不调 OCR） |
+| `IntervalSeconds` | `30` | 周期核对间隔；`0` = 只在换图后与手动点击时读 |
+| `BandWidth/BandHeight` | `260/64` | 取样框尺寸（左下角一块） |
+| `LeftOffset/BottomOffset` | `8/8` | 距左边缘 / 下边缘的偏移，用于按分辨率微调 |
+| `Scale` | `2.0` | 放大倍数（小字放大后 OCR 更稳） |
+| `PosTolerance` | `2` | 坐标容差（格） |
+
+### 12.5 合规边界（与只读嗅探同一条底线）
+
+- 只做屏幕像素拷贝，等价于"人坐在这里看屏幕"；**不向客户端发窗口消息**（不用 `PrintWindow`
+  那种"让客户端自己重绘一份给我"的方式）、不注入、不读进程内存、不挂钩子；
+- OCR 用系统自带 `Windows.Media.Ocr`，**在本进程内完成，不联网、不上传画面**；
+- 结论只写日志与状态栏，**不参与任何动作决策**（不会因为"画面不一致"就去乱点）；
+- 这三条由 `tools/CornerReadSelfTest` 的源码护栏断言保障：出现 `PrintWindow / SendMessage /
+  PostMessage / ReadProcessMemory / WriteProcessMemory / CreateRemoteThread / SetWindowsHookEx /
+  SetWinEventHook` 等字样即自测失败、CI 红。
+
+```bash
+# 离线自测（跨平台，不需要游戏/Windows）
+dotnet run --project tools/CornerReadSelfTest/CornerReadSelfTest.csproj -c Release
+# 39 项：图例版式解析 12 / 比对策略 11 / 合规与接线护栏 16
+```
+
+前置：Windows 10 1809+ 且装有对应 OCR 语言包（中文识别需 `zh-Hans` 语言包；
+缺失时本功能降级为"不可读"，不影响挂机主流程）。

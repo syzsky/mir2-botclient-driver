@@ -9,7 +9,9 @@
   -->
   <PropertyGroup>
     <OutputType>WinExe</OutputType>
-    <TargetFramework>net8.0-windows</TargetFramework>
+    <!-- 提到 10.0.19041.0 只为用系统自带的 WinRT OCR（Windows.Media.Ocr）做左下角图例的只读交叉校验：
+         这是 in-box API，不引第三方 OCR、不联网、不上传任何画面数据。 -->
+    <TargetFramework>net8.0-windows10.0.19041.0</TargetFramework>
     <Nullable>enable</Nullable>
     <ImplicitUsings>enable</ImplicitUsings>
     <LangVersion>latest</LangVersion>
@@ -35,6 +37,11 @@
     <ProjectReference Include="..\BotClient.ClientDriver\BotClient.ClientDriver.csproj" />
     <!-- 只为了共用 HostSettings（botsettings.json 的唯一 schema 定义），不复制粘贴配置文件结构 -->
     <ProjectReference Include="..\BotClientDriverHost\BotClientDriverHost.csproj" />
+  </ItemGroup>
+
+  <ItemGroup>
+    <!-- 视觉核对：System.Drawing 只用来把左下角那小块像素拷出来（GDI BitBlt），再交给 WinRT OCR 识别 -->
+    <PackageReference Include="System.Drawing.Common" Version="8.0.0" />
   </ItemGroup>
 
   <!--

@@ -63,6 +63,15 @@ public sealed class ClientDriverConfig
     /// </summary>
     public string MapDirHint { get; set; } = "";
 
+    // ---------------------------------------------------------------- 视觉核对（只读）
+
+    /// <summary>
+    /// 左下角图例的只读视觉核对（截客户区左下角一小块 + 系统自带 OCR）。
+    /// 这是**校验通道**：只用来回答"嗅探到的地图/坐标可不可信"，绝不参与动作决策。
+    /// 关掉即回到"只有嗅探一条数据源"的旧行为。详见 <see cref="CornerOcrOptions"/>。
+    /// </summary>
+    public CornerOcrOptions Ocr { get; set; } = new();
+
     // ---------------------------------------------------------------- 跨服适配
 
     /// <summary>
@@ -312,4 +321,40 @@ public sealed class KeyBindingConfig
 
     public ushort? ResolveSpellKey(int spellSlot)
         => spellSlot >= 0 && spellSlot < SpellKeys.Length && SpellKeys[spellSlot] != 0 ? SpellKeys[spellSlot] : null;
+}
+
+/// <summary>
+/// 左下角图例的只读视觉核对参数（clientdriver.json 的 "Ocr" 节）。
+///
+/// 用途单一：画面读出来的"地图名 + 坐标"和嗅探解出来的对不上时在日志/状态栏报警，
+/// 让"嗅探是否可信"一眼可见。**不参与任何动作决策** —— 挂机动作永远只由嗅探数据驱动。
+///
+/// 检测面：只截屏幕像素（GDI BitBlt 读显存），不发窗口消息、不调 PrintWindow、不注入、
+/// 不读客户端内存、不碰客户端文件；低频（换图后 + 默认 30s 一次）小区域，对客户端完全透明。
+/// </summary>
+public sealed class CornerOcrOptions
+{
+    /// <summary>总开关。默认开。</summary>
+    public bool Enabled { get; set; } = true;
+
+    /// <summary>运行中的周期核对间隔（秒）。0 = 只在换图后核对一次，之后不再自动跑。</summary>
+    public int IntervalSeconds { get; set; } = 30;
+
+    /// <summary>截取区域宽度（像素，从客户区左下角起算）。</summary>
+    public int BandWidth { get; set; } = 520;
+
+    /// <summary>截取区域高度（像素）。</summary>
+    public int BandHeight { get; set; } = 48;
+
+    /// <summary>左偏移（像素）：某些客户端图例不贴最左边，这里微调。</summary>
+    public int LeftOffset { get; set; } = 0;
+
+    /// <summary>下偏移（像素）：图例离底边的距离，向上抬时填正数。</summary>
+    public int BottomOffset { get; set; } = 0;
+
+    /// <summary>识别前放大倍数（1~4）。图例字小，默认 2 倍能明显提高命中率。</summary>
+    public int Scale { get; set; } = 2;
+
+    /// <summary>坐标容差（格）。图例刷新比封包慢半拍，默认允许差 1 格。</summary>
+    public int PosTolerance { get; set; } = 1;
 }

@@ -18,6 +18,18 @@
   "_说明_CmdOverrides": "命令码差异（L3 层）。key = Grobal2 里的 CM_/SM_ 常量名，value = 该服的编号；只填对不上的，其余走内置表。",
   "CmdOverrides": {},
 
+  "_说明_Ocr": "画面左下角图例的只读交叉校验（默认开）：截一小块屏幕 + 本机 OCR 读出地图名/坐标，和嗅探数据比对，只写日志状态栏，不参与任何动作决策。Enabled=false 可整体关闭；IntervalSeconds=0 表示只在换图后与手动点『视觉核对』时读。",
+  "Ocr": {
+    "Enabled": true,
+    "IntervalSeconds": 30,
+    "BandWidth": 260,
+    "BandHeight": 64,
+    "LeftOffset": 8,
+    "BottomOffset": 8,
+    "Scale": 2.0,
+    "PosTolerance": 2
+  },
+
   "View": {
     "ViewLeft": 0,
     "ViewTop": 0,

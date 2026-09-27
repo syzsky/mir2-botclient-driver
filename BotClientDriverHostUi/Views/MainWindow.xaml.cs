@@ -189,6 +189,10 @@ public partial class MainWindow : Window
         ChipUi.Text = host?.Ui?.State.ToString() ?? "—";
         ChipCal.Text = _runner.Driver.View.IsCalibrated ? "已校准" : "未校准";
         ChipClient.Text = _runner.ClientChipText;
+        ChipCorner.Text = _runner.CornerChipText;
+
+        // 周期视觉核对：只读截一小块屏幕 + 本地 OCR，与嗅探数据比对（间隔由配置节流）
+        _runner.MaybePeriodicCornerCheck();
 
         // 「等待客户端连接」状态下周期性只读重试跟随：客户端一登录就自动接上，
         // 这样识别客户端不再依赖“已经点过开始挂机”，顺序不会再死锁。
@@ -361,6 +365,16 @@ public partial class MainWindow : Window
     }
 
     private void OnSelfCheckClick(object sender, RoutedEventArgs e) => _runner.RunSelfCheck();
+
+    /// <summary>
+    /// 视觉核对：立刻只读读一次画面左下角的"地图/坐标"，与嗅探数据比对并打日志。
+    /// 它不改任何动作、不发窗口消息，纯粹用来回答"嗅探这条数据源此刻可不可信"。
+    /// </summary>
+    private void OnCornerCheckClick(object sender, RoutedEventArgs e)
+    {
+        AppendLog("[核对] 手动触发：读取画面左下角（只读，不影响挂机动作）…");
+        _runner.RequestCornerCheck();
+    }
 
     /// <summary>
     /// 扫描客户端：一次列出本机所有候选客户端进程（各引擎通用；同名多开逐条列出各自连接），

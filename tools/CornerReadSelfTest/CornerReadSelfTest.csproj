@@ -1,0 +1,23 @@
+<Project Sdk="Microsoft.NET.Sdk">
+
+  <!-- 离线自测：不连客户端、不抓包、不截屏、不调 OCR。
+       ① 直接编译「左下角图例读数解析 + 与嗅探数据比对」的纯逻辑源码，用真机常见版式做断言；
+       ② 顺带做一次源码护栏：确认视觉核对走的确实是"只读像素拷贝"这条合规路径
+          （不许出现 PrintWindow / 消息注入 / 内存读写 / 钩子等会被客户端察觉的手段）。 -->
+  <PropertyGroup>
+    <OutputType>Exe</OutputType>
+    <TargetFramework>net8.0</TargetFramework>
+    <Nullable>enable</Nullable>
+    <LangVersion>latest</LangVersion>
+    <ImplicitUsings>enable</ImplicitUsings>
+    <EnableDefaultCompileItems>false</EnableDefaultCompileItems>
+    <AssemblyName>CornerReadSelfTest</AssemblyName>
+    <RootNamespace>CornerReadSelfTest</RootNamespace>
+  </PropertyGroup>
+
+  <ItemGroup>
+    <Compile Include="Program.cs" />
+    <Compile Include="../../BotClient.Core/Vision/MapCornerParser.cs" />
+  </ItemGroup>
+
+</Project>
