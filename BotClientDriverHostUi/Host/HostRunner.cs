@@ -2,6 +2,7 @@ using System.IO;
 using BotClient.ClientDriver;
 using BotClient.ClientDriver.Hunt;
 using BotClient.ClientDriver.Sniff;
+using BotClient.Core.Host;
 using BotClient.Human;
 using BotClient.Net;
 using BotClient.Session;
@@ -151,9 +152,12 @@ public sealed class HostRunner
         Emit("[ui] 自动识别客户端进程与服务端地址…");
         try
         {
-            if (host.AutoConfigure())
+            bool identified = host.AutoConfigure();
+            // 状态判定集中在 ClientFollowPolicy：识别到才算已绑定，没识别到一律进入「等待客户端」。
+            _awaitClientFollow = ClientFollowPolicy.DecideAfterStart(identified, !string.IsNullOrWhiteSpace(Settings.Host))
+                                 == ClientBindState.WaitingClient;
+            if (identified)
             {
-                _awaitClientFollow = false;
                 Emit($"[ui] 已锁定目标客户端：进程={Driver.ProcessName} / pid={Driver.TargetPid} / " +
                      $"句柄={(Driver.TargetHwnd != 0 ? "0x" + Driver.TargetHwnd.ToString("X") : "—")} / " +
                      $"服务端={(string.IsNullOrWhiteSpace(Driver.ServerIp) ? "（等连接自行跟随）" : Driver.ServerIp)}");
@@ -170,7 +174,6 @@ public sealed class HostRunner
             else if (!string.IsNullOrWhiteSpace(Settings.Host))
             {
                 Driver.ServerIp = Settings.Host;
-                _awaitClientFollow = true;
                 Emit($"[ui] 自动识别未命中，退回 botsettings.json 的 Host={Settings.Host}");
                 Emit("[ui] 本次启动处于“等待客户端”状态：客户端登录进游戏后会自动跟上");
             }
@@ -178,7 +181,6 @@ public sealed class HostRunner
             {
                 // 没识别到目标时**不假装已经在挂机**：AI 在会话未连接时不发任何包，
                 // 客户端登录后由界面定时器自动重试跟随；也可随时用「扫描客户端」人工指定。
-                _awaitClientFollow = true;
                 Emit("[ui] 尚未识别到客户端目标：本次启动不产生任何动作，处于“等待客户端连接”状态。");
                 Emit("[ui] 收尾方式：① 启动客户端并登录，宿主自动跟上；② 点「扫描客户端」人工选定目标后即跟随。");
             }
@@ -415,16 +417,17 @@ public sealed class HostRunner
     public void ReDiscover()
     {
         ClientDriverHost? host = Host;
-        if (host == null)
+        // 决策集中在 ClientFollowPolicy（纯逻辑，离线自测覆盖）：
+        // 未挂机 → 只读识别；已挂机 → 覆盖式重识别。识别客户端**不依赖**挂机是否已经开始。
+        if (ClientFollowPolicy.DecideRefresh(host != null) == ClientRefreshAction.IdentifyOffline)
         {
-            // 识别客户端是**纯只读**动作（读 TCP 表 ∪ 顶层窗口），不依赖挂机是否已经开始。
-            // 旧实现把它锁在"已启动"之后，等于要求"先点开始挂机，才允许去获取客户端"——
-            // 客户端都还没连上，挂机本身无从谈起，顺序是反的。这里改为未挂机也能识别。
             Emit("[ui] 当前未挂机：按只读方式扫描并识别客户端（选好目标后再点“开始挂机”即跟随）");
             IdentifyClientOffline();
             StatusChanged?.Invoke();
             return;
         }
+
+        if (host == null) return;   // 不可达：DecideRefresh 已在 host==null 时分流到只读识别分支
 
         try
         {
@@ -487,14 +490,14 @@ public sealed class HostRunner
     /// </summary>
     public void RetryFollowClient()
     {
-        if (!_awaitClientFollow || !IsRunning) return;
-        if (++_followTicks % 10 != 0) return;   // 500ms × 10 ≈ 5s，避免每帧全量扫进程
+        // 节流决策集中在 ClientFollowPolicy：等待中 + 已挂机 + 每约 5 秒一次（500ms × 10）。
+        if (!ClientFollowPolicy.ShouldRetryFollow(_awaitClientFollow, IsRunning, ++_followTicks)) return;
 
         try
         {
             List<ClientCandidate> cands = ClientDiscovery.Discover(Driver, 8);
-            ClientCandidate? best = cands.FirstOrDefault(c => c.LikelyGame) ?? cands.FirstOrDefault();
-            if (best == null) return;
+            if (!ClientFollowPolicy.ShouldAdoptOnRetry(cands.Count)) return;
+            ClientCandidate? best = cands.FirstOrDefault(c => c.LikelyGame) ?? cands[0];
 
             _awaitClientFollow = false;
             Emit($"[ui] 客户端已出现，自动跟上：{best.ProcessName}(pid={best.Pid})" +
@@ -877,32 +880,14 @@ public sealed class HostRunner
 
     /// <summary>顶部「客户端」芯片的短文本：未绑定 / 等待连接… / pid=xx(已绑定)。</summary>
     public string ClientChipText
-    {
-        get
-        {
-            if (Driver.TargetPid > 0) return $"pid={Driver.TargetPid}";
-            if (Driver.TargetHwnd != 0) return $"句柄 0x{Driver.TargetHwnd:X}";
-            return _awaitClientFollow ? "等待连接…" : "未绑定";
-        }
-    }
+        => ClientFollowPolicy.ChipText(Driver.TargetPid, Driver.TargetHwnd, _awaitClientFollow);
 
     /// <summary>
     /// 目标客户端的一句话描述：未绑定时提示"自动挑选"，绑定时给出 pid/句柄，等待客户端时给出等待提示。
     /// 用于状态摘要 —— 让"到底有没有连上客户端"一眼可见。
     /// </summary>
     public string DescribeClientTarget()
-    {
-        if (Driver.TargetPid <= 0 && Driver.TargetHwnd == 0)
-        {
-            return _awaitClientFollow
-                ? "等待客户端连接（未绑定：每约 5 秒只读重试，客户端登录后自动跟上）"
-                : "未绑定（启动时自动挑选评分最高的候选）";
-        }
-
-        string window = Driver.TargetHwnd != 0 ? $"句柄=0x{Driver.TargetHwnd:X}" : "未绑定句柄";
-        return $"{Driver.ProcessName}(pid={Driver.TargetPid})｜{window}" +
-               (_awaitClientFollow ? "｜等待该客户端登录" : string.Empty);
-    }
+        => ClientFollowPolicy.DescribeTarget(Driver.ProcessName, Driver.TargetPid, Driver.TargetHwnd, _awaitClientFollow);
 
     /// <summary>状态摘要（左侧“状态/定点”页显示，排障时一眼看清当前配置）。</summary>
     public string BuildStatusText()
@@ -921,8 +906,7 @@ public sealed class HostRunner
         sb.AppendLine();
         sb.AppendLine("—— 抓包 / 运行 ——");
         sb.AppendLine("   抓包状态      : " + SniffState);
-        sb.AppendLine("   运行状态      : " + (IsRunning ? (SniffOnly ? "仅嗅探" : "挂机中") : "未启动") +
-                      (_awaitClientFollow && IsRunning ? "（等待客户端连接：尚未产生任何动作）" : string.Empty));
+        sb.AppendLine("   运行状态      : " + ClientFollowPolicy.RunningStateNote(IsRunning, SniffOnly, _awaitClientFollow));
         sb.AppendLine("   挂机任务      : " + HuntState);
         BotRuntime? rt = Runtime;
         if (rt != null)

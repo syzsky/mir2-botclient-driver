@@ -1,0 +1,24 @@
+<Project Sdk="Microsoft.NET.Sdk">
+
+  <!-- 离线自测：不连客户端、不抓包、不碰 Windows API。
+       直接编译「识别客户端 / 等待客户端 / 自动跟上」的状态决策源码，
+       验证客户投诉的那条死循环（"获取客户端必须先点开始挂机"）已经不存在，
+       并顺带做一次源码护栏：宿主真实调用的确实是这份被测策略。
+       跨平台跑得起来，CI 里每次 push 都会验。 -->
+  <PropertyGroup>
+    <OutputType>Exe</OutputType>
+    <TargetFramework>net8.0</TargetFramework>
+    <Nullable>enable</Nullable>
+    <LangVersion>latest</LangVersion>
+    <ImplicitUsings>enable</ImplicitUsings>
+    <EnableDefaultCompileItems>false</EnableDefaultCompileItems>
+    <AssemblyName>ClientFollowSelfTest</AssemblyName>
+    <RootNamespace>ClientFollowSelfTest</RootNamespace>
+  </PropertyGroup>
+
+  <ItemGroup>
+    <Compile Include="Program.cs" />
+    <Compile Include="../../BotClient.Core/Host/ClientFollowPolicy.cs" />
+  </ItemGroup>
+
+</Project>
