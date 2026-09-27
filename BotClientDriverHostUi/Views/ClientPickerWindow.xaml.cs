@@ -47,18 +47,43 @@ public partial class ClientPickerWindow : Window
         CandidateList.ItemsSource = shown;
 
         int launcherLike = _all.Count(c => !c.LikelyGame);
-        CountText.Text = $"候选 {_all.Count} 条（疑似登录器/未知 {launcherLike} 条）" +
+        int notConnected = _all.Count(c => c.ServerPort == 0);
+        CountText.Text = $"候选 {_all.Count} 条（游戏 {_all.Count - launcherLike} · 疑似登录器/未知 {launcherLike} · 尚未连接 {notConnected}）" +
             (_runner.Driver.TargetHwnd != 0
                 ? $"（已绑定 句柄=0x{_runner.Driver.TargetHwnd:X} / pid={_runner.Driver.TargetPid}）"
                 : _runner.Driver.TargetPid > 0 ? $"（已锁定 pid={_runner.Driver.TargetPid}，未绑定句柄）" : "（自动挑选）");
 
-        if (shown.Count > 0 && CandidateList.SelectedIndex < 0) CandidateList.SelectedIndex = 0;
-        if (shown.Count == 0 && _all.Count > 0)
-            HintText.Text = "按当前筛选没有『游戏』类型的候选——说明只有登录器/更新器的连接，" +
-                            "请把游戏客户端启动并登录进游戏后再点「重新扫描」。";
+        // 已经钉过的那条自动选中：重扫/切筛选后不用再手点一次
+        if (CandidateList.SelectedIndex < 0 && shown.Count > 0)
+        {
+            int pinned = shown.FindIndex(c => _runner.Driver.TargetHwnd != 0 && c.Hwnd == _runner.Driver.TargetHwnd);
+            if (pinned < 0) pinned = shown.FindIndex(c => _runner.Driver.TargetPid > 0 && c.Pid == _runner.Driver.TargetPid);
+            CandidateList.SelectedIndex = pinned >= 0 ? pinned : 0;
+        }
+
+        if (shown.Count == 0 && _all.Count > 0 && gameOnly)
+            HintText.Text = "候选有 " + _all.Count + " 条，但当前勾着「只看疑似游戏客户端」全被过滤掉了：" +
+                            "取消该勾选看全部候选，或勾上「显示全部窗口（兜底）」把本机所有可见窗口都列出来手工挑。";
+        else if (_all.Count == 0)
+            HintText.Text = "扫描结果为空（0 条候选）。" + ClientDiscovery.LastDiagnostics +
+                            " 兜底办法：勾上「显示全部窗口（兜底）」，把本机所有可见顶层窗口都列出来直接挑。";
+        else
+            HintText.Text = $"候选 {_all.Count} 条；已按分数排序，默认选中的就是自动挑选的那条（第 1 条）。" +
+                            "「尚未连接」的行说明客户端停在登录界面 —— 现在就能选它，进游戏后抓包会自动跟随。";
     }
 
     private void OnFilterChanged(object sender, RoutedEventArgs e) => ApplyFilter();
+
+    /// <summary>
+    /// 「显示全部窗口（兜底）」：切换候选来源到"本机所有可见顶层窗口"后重扫。
+    /// 个别引擎的客户端即使用硬结构判据也没认出来时，用这个把全部窗口列出来人工挑 —— 保证"能连上"。
+    /// </summary>
+    private void OnAllWindowsChanged(object sender, RoutedEventArgs e)
+    {
+        if (!IsLoaded) return;
+        ClientDiscovery.IncludeAllWindows = AllWindowsChk.IsChecked == true;
+        Rescan();
+    }
 
     private void SetButtons()
     {

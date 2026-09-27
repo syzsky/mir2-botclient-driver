@@ -74,22 +74,53 @@ public static class WindowBinder
     /// 小工具窗扣分。**不看绝对分辨率**，与 ClientDiscovery 的判据同源。挑不出时返回 IntPtr.Zero。
     /// </summary>
     public static IntPtr PickTopWindow(int pid, out string why)
+        => PickTopWindowFrom(TopWindows(pid), out why);
+
+    /// <summary>
+    /// 本机**所有可见顶层窗口**（句柄 + 归属进程）。
+    /// 用途：客户端发现从"连接优先"升级为"窗口优先" —— 引擎无关、协议无关，也不要求客户端已登录，
+    /// 只要窗口显示出来就能被列为候选、被人工绑定句柄（这是"所有传奇客户端都能连"的入口）。
+    /// </summary>
+    public static List<(IntPtr Hwnd, int Pid)> AllTopWindows()
+    {
+        var list = new List<(IntPtr, int)>();
+        if (!OperatingSystem.IsWindows()) return list;
+
+        try
+        {
+            EnumWindows((h, _) =>
+            {
+                try
+                {
+                    if (!IsWindowVisible(h)) return true;
+                    GetWindowThreadProcessId(h, out uint owner);
+                    if (owner != 0) list.Add((h, (int)owner));
+                }
+                catch { }
+                return true;
+            }, IntPtr.Zero);
+        }
+        catch
+        {
+            // 枚举失败：按"无信息"处理（调用方仍可用连接侧来源）
+        }
+
+        return list;
+    }
+
+    /// <summary>
+    /// 从一组窗口里挑"最像游戏本体"的那一个（挑不出返回 IntPtr.Zero）。
+    /// 多窗口进程（登录窗体 + 游戏渲染窗）里，它保证挑到的是渲染窗而不是登录窗体。
+    /// </summary>
+    public static IntPtr PickTopWindowFrom(IEnumerable<IntPtr> windows, out string why)
     {
         why = "";
         IntPtr best = IntPtr.Zero;
         int bestScore = int.MinValue;
 
-        foreach (IntPtr h in TopWindows(pid))
+        foreach (IntPtr h in windows)
         {
-            WindowInfo w = WindowProbe.Describe(h);
-            int score = 0;
-            if (w.Sizeable) score += 25;
-            if (w.SelfDrawn) score += 25;
-            if (w.Covers) score += w.NearlyFullscreen ? 50 : 30;
-            if (w.Tiny) score -= 30;
-            if (EngineClassWords.Any(k => w.Class.ToLowerInvariant().Contains(k))) score += 25;
-            if (!string.IsNullOrEmpty(TitleOf(h))) score += 5;
-
+            int score = ScoreWindow(WindowProbe.Describe(h), TitleOf(h));
             if (score > bestScore)
             {
                 bestScore = score;
@@ -100,6 +131,22 @@ public static class WindowBinder
         if (best != IntPtr.Zero) why = $"{Describe(best)}（结构分 {bestScore}）";
         else why = "该进程没有可见的顶层窗口";
         return best;
+    }
+
+    /// <summary>
+    /// 窗口结构打分（与分辨率无关）：可缩放主窗 / 自绘渲染窗 / 占屏过半 / 类名像引擎渲染窗 加分，小工具窗扣分。
+    /// 与 ClientDiscovery 的判据同源，保证"窗口优先"与"连接优先"两条路选出的是同一个窗口。
+    /// </summary>
+    internal static int ScoreWindow(WindowInfo w, string title = "")
+    {
+        int score = 0;
+        if (w.Sizeable) score += 25;
+        if (w.SelfDrawn) score += 25;
+        if (w.Covers) score += w.NearlyFullscreen ? 50 : 30;
+        if (w.Tiny) score -= 30;
+        if (EngineClassWords.Any(k => w.Class.ToLowerInvariant().Contains(k))) score += 25;
+        if (w.Visible && !string.IsNullOrEmpty(title)) score += 5;
+        return score;
     }
 
     /// <summary>

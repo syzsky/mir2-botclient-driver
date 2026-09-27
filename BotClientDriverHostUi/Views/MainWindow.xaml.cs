@@ -1,5 +1,6 @@
 using System.Collections.ObjectModel;
 using System.ComponentModel;
+using System.IO;
 using System.Windows;
 using System.Windows.Input;
 using System.Windows.Threading;
@@ -25,7 +26,9 @@ public partial class MainWindow : Window
     private const int MaxListRows = 200;
 
     private readonly HostRunner _runner;
+    private readonly HuntTaskStore _taskStore;
     private readonly ObservableCollection<LogLine> _logs = new();
+    private readonly ObservableCollection<HuntTask> _tasks = new();
     private readonly ObservableCollection<EntityRow> _monsters = new();
     private readonly ObservableCollection<EntityRow> _npcs = new();
     private readonly ObservableCollection<EntityRow> _items = new();
@@ -49,6 +52,9 @@ public partial class MainWindow : Window
         ItemList.ItemsSource = _items;
         PlayerList.ItemsSource = _players;
 
+        _taskStore = new HuntTaskStore(Path.Combine(_runner.ConfigDir, "hunt_tasks.json"));
+        TaskList.ItemsSource = _tasks;
+
         _timer = new DispatcherTimer(TimeSpan.FromMilliseconds(500), DispatcherPriority.Background, OnTick, Dispatcher);
         _timer.Start();
 
@@ -69,6 +75,7 @@ public partial class MainWindow : Window
         AppendLog("[ui] 若出现“device is not open”：先确认 Npcap 已安装（勾 WinPcap 兼容模式）并已用管理员运行；" +
                   "本版本已改为先打开抓包设备再设 BPF 过滤，失败时会给出具体提示而不是直接退出。");
 
+        LoadTasks();
         await StartAsync();
     }
 
@@ -183,6 +190,7 @@ public partial class MainWindow : Window
         ChipCal.Text = _runner.Driver.View.IsCalibrated ? "已校准" : "未校准";
 
         if (_tick % 2 == 0) RefreshLists();
+        if (_tick % 2 == 0) RefreshTaskButtons();
         if (_tick % 6 == 0) RefreshStatusText();
     }
 
@@ -415,6 +423,145 @@ public partial class MainWindow : Window
     }
 
     private void OnClearFightPointClick(object sender, RoutedEventArgs e) => _runner.ClearFightPoint();
+
+    // ------------------------------------------------------------------ 挂机任务编辑器
+
+    private HuntTask? SelectedTask => TaskList.SelectedItem as HuntTask;
+
+    /// <summary>把 hunt_tasks.json 读进列表（读失败按空清单处理并如实说明，不让坏文件卡住界面）。</summary>
+    private void LoadTasks()
+    {
+        _tasks.Clear();
+        foreach (HuntTask task in _taskStore.Load()) _tasks.Add(task);
+
+        if (_taskStore.LastError != null)
+            AppendLog("[任务] 读取失败（按空清单处理）: " + _taskStore.LastError);
+
+        if (_tasks.Count > 0) TaskList.SelectedIndex = 0;
+        AppendLog($"[任务] 已载入 {_tasks.Count} 条挂机任务：{_taskStore.Path}");
+        RefreshTaskButtons();
+    }
+
+    /// <summary>写盘；失败必须如实报——否则用户会以为"加了任务但没生效"。</summary>
+    private void PersistTasks()
+    {
+        if (!_taskStore.Save(_tasks.ToList()))
+            AppendLog("[任务] 保存失败: " + _taskStore.LastError + "（改动只在内存里，重启会丢）");
+    }
+
+    private void OnTaskSelectionChanged(object sender, System.Windows.Controls.SelectionChangedEventArgs e) => RefreshTaskButtons();
+
+    private void RefreshTaskButtons()
+    {
+        bool has = SelectedTask != null;
+        TaskEditBtn.IsEnabled = has;
+        TaskDelBtn.IsEnabled = has;
+        TaskUpBtn.IsEnabled = has;
+        TaskDownBtn.IsEnabled = has;
+        TaskRunBtn.IsEnabled = has && _runner.IsRunning && !_runner.IsHunting;
+        TaskStopBtn.IsEnabled = _runner.IsHunting;
+    }
+
+    private void OnTaskAddClick(object sender, RoutedEventArgs e)
+    {
+        var window = new HuntTaskWindow(null) { Owner = this };
+        if (window.ShowDialog() != true) return;
+
+        _tasks.Add(window.Result);
+        TaskList.SelectedItem = window.Result;
+        PersistTasks();
+        AppendLog($"[任务] 已添加「{window.Result.DisplayName}」：{window.Result.ToPlan().Describe()}");
+        RefreshTaskButtons();
+    }
+
+    private void OnTaskEditClick(object sender, RoutedEventArgs e) => EditSelectedTask();
+
+    private void OnTaskDoubleClick(object sender, MouseButtonEventArgs e)
+    {
+        if (SelectedTask != null) EditSelectedTask();
+    }
+
+    private void EditSelectedTask()
+    {
+        HuntTask? task = SelectedTask;
+        if (task == null)
+        {
+            AppendLog("[任务] 先在列表里选中一条任务");
+            return;
+        }
+
+        var window = new HuntTaskWindow(task) { Owner = this };
+        if (window.ShowDialog() != true) return;
+
+        int index = _tasks.IndexOf(task);
+        _tasks[index] = window.Result;
+        TaskList.SelectedIndex = index;
+        PersistTasks();
+        AppendLog($"[任务] 已更新「{window.Result.DisplayName}」：{window.Result.ToPlan().Describe()}");
+        RefreshTaskButtons();
+    }
+
+    private void OnTaskDeleteClick(object sender, RoutedEventArgs e)
+    {
+        HuntTask? task = SelectedTask;
+        if (task == null)
+        {
+            AppendLog("[任务] 先在列表里选中一条任务");
+            return;
+        }
+
+        MessageBoxResult answer = MessageBox.Show(
+            this,
+            "删除挂机任务「" + task.DisplayName + "」？此操作只影响 hunt_tasks.json。",
+            "删除挂机任务",
+            MessageBoxButton.OKCancel,
+            MessageBoxImage.Warning);
+        if (answer != MessageBoxResult.OK) return;
+
+        int index = _tasks.IndexOf(task);
+        _tasks.Remove(task);
+        if (_tasks.Count > 0) TaskList.SelectedIndex = Math.Min(index, _tasks.Count - 1);
+
+        PersistTasks();
+        AppendLog($"[任务] 已删除「{task.DisplayName}」");
+        RefreshTaskButtons();
+    }
+
+    private void OnTaskUpClick(object sender, RoutedEventArgs e) => MoveSelectedTask(-1);
+
+    private void OnTaskDownClick(object sender, RoutedEventArgs e) => MoveSelectedTask(1);
+
+    private void MoveSelectedTask(int delta)
+    {
+        HuntTask? task = SelectedTask;
+        if (task == null) return;
+
+        int index = _tasks.IndexOf(task);
+        int target = index + delta;
+        if (target < 0 || target >= _tasks.Count) return;
+
+        _tasks.Move(index, target);
+        TaskList.SelectedIndex = target;
+        PersistTasks();
+    }
+
+    private void OnTaskRunClick(object sender, RoutedEventArgs e)
+    {
+        HuntTask? task = SelectedTask;
+        if (task == null)
+        {
+            AppendLog("[任务] 先在列表里选中一条任务");
+            return;
+        }
+
+        if (_runner.StartHuntTask(task)) RefreshTaskButtons();
+    }
+
+    private void OnTaskStopClick(object sender, RoutedEventArgs e)
+    {
+        _runner.StopHuntTask();
+        RefreshTaskButtons();
+    }
 
     private void OnAboutClick(object sender, RoutedEventArgs e)
     {

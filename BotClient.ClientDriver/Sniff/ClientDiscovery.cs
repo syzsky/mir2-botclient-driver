@@ -107,47 +107,65 @@ public static class TcpTableReader
     private static extern uint GetExtendedTcpTable(
         IntPtr pTcpTable, ref int pdwSize, bool bOrder, int ulAf, int tableClass, int reserved);
 
+    /// <summary>最近一次抓表的失败原因（成功为空串）。只用于诊断输出。</summary>
+    public static string LastError { get; private set; } = string.Empty;
+
     /// <summary>抓一份当前连接表快照；非 Windows 或调用失败时返回空列表（调用方自行降级）。</summary>
+    /// <remarks>
+    /// 旧实现只读一次：表在"查询长度"和"真正读表"之间变大时，GetExtendedTcpTable 会返回
+    /// ERROR_INSUFFICIENT_BUFFER，被当成失败静默返回空列表 —— 外观上就是"扫描到 0 条候选"。
+    /// 现在容量不足会放大重读（最多 4 次），并把失败原因记到 <see cref="LastError"/>。
+    /// </remarks>
     public static List<TcpEndpoint> Snapshot(bool establishedOnly = true)
     {
         var list = new List<TcpEndpoint>();
-        if (!OperatingSystem.IsWindows()) return list;
+        LastError = string.Empty;
+        if (!OperatingSystem.IsWindows()) { LastError = "非 Windows 平台"; return list; }
 
         int size = 0;
         uint ret = GetExtendedTcpTable(IntPtr.Zero, ref size, false, AF_INET, TCP_TABLE_OWNER_PID_ALL, 0);
-        if (size <= 0) return list;
+        if (size <= 0) { LastError = $"查询表长度失败（返回码 {ret}）"; return list; }
 
-        IntPtr buf = Marshal.AllocHGlobal(size);
-        try
+        for (int attempt = 0; attempt < 4; attempt++)
         {
-            ret = GetExtendedTcpTable(buf, ref size, false, AF_INET, TCP_TABLE_OWNER_PID_ALL, 0);
-            if (ret != 0) return list;
-
-            int count = Marshal.ReadInt32(buf);
-            int rowSize = Marshal.SizeOf<MibTcpRowOwnerPid>();
-            IntPtr rowPtr = IntPtr.Add(buf, 4);
-
-            for (int i = 0; i < count; i++)
+            IntPtr buf = Marshal.AllocHGlobal(size);
+            try
             {
-                var row = Marshal.PtrToStructure<MibTcpRowOwnerPid>(IntPtr.Add(rowPtr, i * rowSize));
-                int state = (int)row.State;
-                if (establishedOnly && state != MIB_TCP_STATE_ESTAB) continue;
+                int cap = size;
+                ret = GetExtendedTcpTable(buf, ref cap, false, AF_INET, TCP_TABLE_OWNER_PID_ALL, 0);
+                if (ret == 122 && cap > size) { size = cap; continue; }   // 122=ERROR_INSUFFICIENT_BUFFER：表变大了，放大重读
+                if (ret != 0) { LastError = $"读表失败（返回码 {ret}，缓冲区 {cap} 字节）"; return list; }
 
-                list.Add(new TcpEndpoint(
-                    AddrToString(row.LocalAddr), Ntohs(row.LocalPort),
-                    AddrToString(row.RemoteAddr), Ntohs(row.RemotePort),
-                    (int)row.OwningPid, state));
+                int count = Marshal.ReadInt32(buf);
+                int rowSize = Marshal.SizeOf<MibTcpRowOwnerPid>();
+                IntPtr rowPtr = IntPtr.Add(buf, 4);
+
+                for (int i = 0; i < count; i++)
+                {
+                    var row = Marshal.PtrToStructure<MibTcpRowOwnerPid>(IntPtr.Add(rowPtr, i * rowSize));
+                    int state = (int)row.State;
+                    if (establishedOnly && state != MIB_TCP_STATE_ESTAB) continue;
+
+                    list.Add(new TcpEndpoint(
+                        AddrToString(row.LocalAddr), Ntohs(row.LocalPort),
+                        AddrToString(row.RemoteAddr), Ntohs(row.RemotePort),
+                        (int)row.OwningPid, state));
+                }
+
+                return list;
+            }
+            catch (Exception ex)
+            {
+                LastError = "解析 TCP 表失败: " + ex.Message;
+                return list;
+            }
+            finally
+            {
+                Marshal.FreeHGlobal(buf);
             }
         }
-        catch
-        {
-            // 表结构异常时静默降级：调用方会得到不完整结果，而不是崩溃
-        }
-        finally
-        {
-            Marshal.FreeHGlobal(buf);
-        }
 
+        LastError = $"读表重试 4 次仍容量不足（{size} 字节）";
         return list;
     }
 
@@ -421,6 +439,36 @@ internal static class ModuleProbe
 
         return string.Empty;
     }
+
+    [DllImport("kernel32.dll", SetLastError = true)]
+    private static extern bool IsWow64Process(IntPtr hProcess, out bool wow64);
+
+    /// <summary>
+    /// 目标进程是否 32 位（WOW64）。
+    /// 为什么单独需要这一项：64 位宿主对 32 位传奇客户端**枚举不到对方模块**（拿不到 ddraw/d3d9），
+    /// "渲染模块"这个硬信号会整片消失。而传奇客户端绝大多数就是 32 位 —— 把它作为独立小加分项，
+    /// 让判定不因宿主体位而失效。取不到时返回 false（不加分，也不扣分）。
+    /// </summary>
+    public static bool Is32Bit(int pid)
+    {
+        if (!OperatingSystem.IsWindows() || pid <= 0) return false;
+
+        IntPtr h = IntPtr.Zero;
+        try
+        {
+            h = OpenProcess(PROCESS_QUERY_INFORMATION, false, pid);
+            if (h == IntPtr.Zero) return false;
+            return IsWow64Process(h, out bool wow64) && wow64;
+        }
+        catch
+        {
+            return false;
+        }
+        finally
+        {
+            if (h != IntPtr.Zero) CloseHandle(h);
+        }
+    }
 }
 
 /// <summary>
@@ -510,6 +558,13 @@ internal static class ProcessTree
 ///      命中则降权并标成"疑似登录器"；由登录器**拉起**的子进程（父进程像登录器）反而加权，因为那才是游戏本体。
 /// 同时把浏览器、聊天工具、开发工具等明显无关进程直接排除。
 /// 排序后 "游戏" 排在 "疑似登录器" 之前，自动挑选时也不会再选到登录器。
+///
+/// **窗口优先（各引擎通用）**：候选同时来自两条独立来源 ——
+///   ⓐ 连接侧：有 established 连接的本机进程（旧有逻辑，用作"游戏/登录器"的类型判定）；
+///   ⓑ 窗口侧：本机**所有可见顶层窗口**，不看引擎、不看协议、也不要求"已经登录"。
+/// 只要客户端把窗口显示出来，就能出现在候选里 → 人工选定 → 钉住窗口句柄；
+/// 客户端"还没登录"时也不会再出现"扫到 0 条候选"（这正是旧实现最大的坑）。
+/// 选择器上的「显示全部窗口」还能把判据之外的可见窗口一并列出，作为任意引擎/任意客户端的最后兜底。
 /// </summary>
 public static class ClientDiscovery
 {
@@ -541,6 +596,33 @@ public static class ClientDiscovery
         "mir", "legend", "m2", "engine", "render", "d3d", "direct", "game",
     };
 
+    /// <summary>
+    /// 引擎自绘窗常见的类名（弱信号，只加分不做门槛）：传奇客户端多为 Delphi/C++ 自绘窗体，
+    /// 类名常是 TForm1/TFrmMain 这类；不确定的引擎一律靠"结构 + 渲染库 + 端口"综合判断。
+    /// </summary>
+    private static readonly string[] EngineClassSoftWords =
+    {
+        "tform", "tfrm", "tdx", "tgxx", "mir2", "windowsforms10.window.8.app", "atllibx", "mfc",
+    };
+
+    /// <summary>
+    /// 明显属于系统外壳 / 浏览器 / 常见 UI 框架的窗口类名：不是游戏渲染窗，列出来只会污染列表。
+    /// 命中即排除（除非手动打开"显示全部窗口"）。
+    /// </summary>
+    private static readonly string[] NoiseWindowClasses =
+    {
+        "shell_traywnd", "progman", "workerw", "shell_dll_defview", "tasklistthumbnailwnd",
+        "windows.ui.core.corewindow", "applicationframehost", "applicationframewindow",
+        "chrome_widgetwin", "mozilla", "internet explorer_server", "consolewindowclass",
+        "cascadia", "hwndwrapper", "notepad", "cabinetwclass", "#32770",
+    };
+
+    /// <summary>
+    /// 宽松模式：把"可见顶层窗口但不满足游戏结构判据"的条目也一并列出，供人工兜底手选。
+    /// 由客户端选择器上的「显示全部窗口」勾选框打开。默认关闭，避免列表被无关窗口淹没。
+    /// </summary>
+    public static bool IncludeAllWindows { get; set; }
+
     /// <summary>HTTP/HTTPS 及常见 Web 端口：登录器/更新器走这里；游戏本体一般走自有 TCP 网关端口。</summary>
     private static readonly int[] HttpPorts =
     {
@@ -556,8 +638,9 @@ public static class ClientDiscovery
     public static List<ClientCandidate> Discover(ClientDriverConfig cfg, int max = 8)
     {
         var endpoints = TcpTableReader.Snapshot();
-        if (endpoints.Count == 0) return new List<ClientCandidate>();
+        var diag = new StringBuilder();
 
+        // ---- 来源①：连接侧（有 established 连接的本机进程）----
         var byPid = new Dictionary<int, List<TcpEndpoint>>();
         foreach (var ep in endpoints)
         {
@@ -565,18 +648,64 @@ public static class ClientDiscovery
             l.Add(ep);
         }
 
+        // ---- 来源②：窗口侧（本机**所有可见顶层窗口**）----
+        // 这一侧是"所有传奇客户端都能连"的基石：它不看引擎、不看协议、也不要求"已经登录"，
+        // 只要客户端把窗口显示出来，就能被列出 → 被人工选定 → 绑上窗口句柄。
+        // 旧实现只从连接表出发，客户端没登录（无连接）时整张列表就是空的 —— 这正是"扫不到客户端"的根因。
+        var winByPid = new Dictionary<int, IntPtr>();
+        var winInfoByPid = new Dictionary<int, WindowInfo>();
+        int topWindowCount = 0;
+        try
+        {
+            var allWindows = WindowBinder.AllTopWindows();
+            topWindowCount = allWindows.Count;
+
+            var grouped = new Dictionary<int, List<IntPtr>>();
+            foreach (var (h, owner) in allWindows)
+            {
+                if (owner <= 0) continue;
+                if (!grouped.TryGetValue(owner, out var hl)) grouped[owner] = hl = new List<IntPtr>();
+                hl.Add(h);
+            }
+            foreach (var kv in grouped)
+            {
+                IntPtr bestWindow = WindowBinder.PickTopWindowFrom(kv.Value, out _);
+                if (bestWindow == IntPtr.Zero) continue;
+                winByPid[kv.Key] = bestWindow;
+                winInfoByPid[kv.Key] = WindowProbe.Describe(bestWindow);
+            }
+        }
+        catch (Exception ex)
+        {
+            diag.Append($"（窗口枚举异常：{ex.Message}）");
+        }
+
+        diag.Append($"[诊断] TCP 已建立连接 {endpoints.Count} 条");
+        if (endpoints.Count == 0 && !string.IsNullOrEmpty(TcpTableReader.LastError))
+            diag.Append($"（读表失败：{TcpTableReader.LastError}）");
+        diag.Append($"；可见顶层窗口 {topWindowCount} 个（涉及进程 {winByPid.Count} 个）");
+
+        // 两条来源取并集：**绝不因为"没有连接"就直接判空**
+        var pids = new HashSet<int>(byPid.Keys);
+        foreach (int pid in winByPid.Keys) pids.Add(pid);
+
         var candidates = new List<ClientCandidate>();
         string prefer = (cfg.ProcessName ?? string.Empty).Trim();
         string preferLower = prefer.ToLowerInvariant();
         bool preferConfigured = !string.IsNullOrWhiteSpace(prefer);
         var tree = ProcessTree.Snapshot();
 
-        foreach (var (pid, eps) in byPid)
+        int droppedBlacklist = 0, droppedNoConn = 0, droppedLowScore = 0, keptLoopback = 0, droppedNoise = 0;
+        var dropped = new List<string>();
+
+        foreach (int pid in pids)
         {
+            if (!byPid.TryGetValue(pid, out var eps)) eps = new List<TcpEndpoint>();
+
             string name;
-            bool hasWindow;
-            string title;
+            string title = string.Empty;
             IntPtr hWnd = IntPtr.Zero;
+            if (winByPid.TryGetValue(pid, out var windowFromWindowSide)) hWnd = windowFromWindowSide;
             try
             {
                 using var p = Process.GetProcessById(pid);
@@ -584,32 +713,79 @@ public static class ClientDiscovery
 
                 // 句柄绑定：优先挑"像游戏本体"的顶层窗口（可缩放/自绘/占屏过半/类名像引擎渲染窗），
                 // 而不是 .NET 猜的 MainWindowHandle（多窗口进程里它经常指到登录窗体）。
-                hWnd = WindowBinder.PickTopWindow(pid, out _);
-                if (hWnd == IntPtr.Zero) hWnd = p.MainWindowHandle;   // 枚举不到就退回旧行为
+                if (hWnd == IntPtr.Zero)
+                {
+                    hWnd = WindowBinder.PickTopWindow(pid, out _);
+                    if (hWnd == IntPtr.Zero) hWnd = p.MainWindowHandle;   // 枚举不到就退回旧行为
+                }
 
-                hasWindow = hWnd != IntPtr.Zero;
-                title = hasWindow ? WindowBinder.TitleOf(hWnd) : string.Empty;
-                if (hasWindow && title.Length == 0) title = SafeTitle(p);
+                title = hWnd != IntPtr.Zero ? WindowBinder.TitleOf(hWnd) : string.Empty;
+                if (hWnd != IntPtr.Zero && title.Length == 0) title = SafeTitle(p);
             }
             catch
             {
                 continue; // 进程已退出 / 无权限
             }
+            bool hasWindow = hWnd != IntPtr.Zero;
 
-            if (IsBlacklisted(name)) continue;
+            if (IsBlacklisted(name))
+            {
+                droppedBlacklist++;
+                AddDrop(dropped, $"{name}(pid={pid}) 命中排除名单");
+                continue;
+            }
 
-            // 只保留"客户端 ↔ 外部服务端"的连接：本机/回环连接不算
+            // 区分"连到外部服务端"与"本机/回环"两类连接。
+            // 注意：客户端与服务端在同一台机器上时（单机私服 / 127.0.0.1 / 本机网卡 IP），
+            // 连接两条腿都在本机；若一律按"回环不算"丢掉，候选列表就会是空的 ——
+            // 所以这里对"窗口可见、进程名/标题还像传奇客户端"的进程仍然列出，并在端口类型里标注。
             var remote = new List<TcpEndpoint>();
+            var loopback = new List<TcpEndpoint>();
             foreach (var ep in eps)
             {
-                if (!TcpTableReader.IsLocalOrLoopback(ep.RemoteAddress)) remote.Add(ep);
+                if (TcpTableReader.IsLocalOrLoopback(ep.RemoteAddress)) loopback.Add(ep);
+                else remote.Add(ep);
             }
-            if (remote.Count == 0) continue;
 
-            // ---- 窗口侧：拿窗口结构特征（可缩放/子控件数/占屏比例）与渲染模块 ----
+            // ---- 窗口结构：先算出来，因为"这一行要不要保留"现在由它决定（窗口优先）----
             // 判据与分辨率无关：游戏窗口分辨率不固定（全屏~800×600 皆可能），不看绝对像素
-            WindowInfo win = hasWindow ? WindowProbe.Describe(hWnd) : WindowInfo.Empty;
+            WindowInfo win = winInfoByPid.TryGetValue(pid, out var cachedWin)
+                ? cachedWin
+                : (hasWindow ? WindowProbe.Describe(hWnd) : WindowInfo.Empty);
             string renderModule = ModuleProbe.RenderModule(pid);
+            bool is32Bit = ModuleProbe.Is32Bit(pid);
+
+            string lowerNameEarly = name.ToLowerInvariant();
+            string lowerTitleEarly = title.ToLowerInvariant();
+            string lowerClassEarly = win.Class.ToLowerInvariant();
+
+            bool nameLikeGameEarly = HintWords.Any(h => lowerNameEarly.Contains(h));
+            bool titleLikeGameEarly = HintWords.Any(h => lowerTitleEarly.Contains(h));
+            bool classLikeGameEarly = EngineClassWords.Any(w => lowerClassEarly.Contains(w));
+            bool hasRenderEarly = renderModule.Length > 0;
+            bool noiseClass = IsNoiseWindowClass(win.Class);
+
+            // 窗口侧"像游戏窗"的结构门槛 —— **与是否登录、是否有连接、引擎是哪一款都无关**。
+            // 只要有一条硬结构特征（自绘渲染窗 / 占屏过半 / 占比≥25%），或名字/标题/类名/渲染库带游戏味，
+            // 就认为这行值得列出（人工再确认）。为"所有传奇客户端都能连"提供兜底入口。
+            bool windowLooksLikeGame = hasWindow && win.Visible && !win.Tiny
+                && (win.SelfDrawn || win.Covers || win.AreaRatio >= 0.25
+                    || classLikeGameEarly || nameLikeGameEarly || titleLikeGameEarly || hasRenderEarly);
+
+            bool loopbackOnly = remote.Count == 0;
+            bool keepLoopback = loopbackOnly && loopback.Count > 0 && hasWindow
+                                && (nameLikeGameEarly || titleLikeGameEarly || windowLooksLikeGame);
+
+            if (loopbackOnly && loopback.Count > 0 && !keepLoopback)
+            {
+                droppedNoConn++;
+                AddDrop(dropped, $"{name}(pid={pid}) 只有本机/回环连接，且窗口/名称没有游戏特征");
+                continue;
+            }
+            if (loopbackOnly && loopback.Count > 0) keptLoopback++;
+
+            // 后续判定与展示统一用这份连接集合
+            var connections = loopbackOnly ? loopback : remote;
 
             // ---- 进程侧：父进程名（登录器拉起的那个才是游戏本体）----
             string parentName = string.Empty;
@@ -621,14 +797,19 @@ public static class ClientDiscovery
                     parentName = parentName[..^4];
             }
 
-            string lowerName = name.ToLowerInvariant();
-            string lowerTitle = title.ToLowerInvariant();
-            string lowerClass = win.Class.ToLowerInvariant();
+            string lowerName = lowerNameEarly;
+            string lowerTitle = lowerTitleEarly;
+            string lowerClass = lowerClassEarly;
             string lowerParent = parentName.ToLowerInvariant();
 
             // ---- 连接侧：是自有 TCP 网关端口，还是只有 Web（HTTP/HTTPS）连接 ----
-            bool anyGamePort = remote.Any(ep => !IsHttpPort(ep.RemotePort));
-            string portKind = anyGamePort ? "含游戏端口" : "仅HTTP";
+            bool hasAnyConnection = connections.Count > 0;
+            bool anyGamePort = connections.Any(ep => !IsHttpPort(ep.RemotePort));
+            string portKind = !hasAnyConnection
+                ? "无连接（窗口侧候选）"
+                : loopbackOnly
+                    ? (anyGamePort ? "本机/回环·含游戏端口" : "本机/回环·仅HTTP")
+                    : (anyGamePort ? "含游戏端口" : "仅HTTP");
 
             // ---- 登录器特征 ----
             bool launcherWord = LauncherWords.Any(w =>
@@ -637,14 +818,15 @@ public static class ClientDiscovery
 
             // ---- 游戏本体特征（全部与分辨率无关）----
             bool winUsable = hasWindow && win.Visible;
-            bool hasRender = renderModule.Length > 0;         // 加载了 ddraw/d3d9/opengl32 等渲染库
+            bool hasRender = hasRenderEarly;                  // 加载了 ddraw/d3d9/opengl32 等渲染库
             bool sizeable = win.Sizeable;                     // 可缩放/可最大化：主窗口，登录器多为固定尺寸小窗
             bool selfDrawn = win.SelfDrawn;                   // 几乎无子控件：引擎自绘渲染窗
             bool covers = win.Covers;                         // 占屏 ≥50%
             bool tiny = win.Tiny;                             // 占屏 <12% 或 <400×300：小工具/启动器
-            bool nameLikeGame = HintWords.Any(h => lowerName.Contains(h));
-            bool titleLikeGame = HintWords.Any(h => lowerTitle.Contains(h));
-            bool classLikeGame = EngineClassWords.Any(w => lowerClass.Contains(w));
+            bool nameLikeGame = nameLikeGameEarly;
+            bool titleLikeGame = titleLikeGameEarly;
+            bool classLikeGame = classLikeGameEarly;
+            bool softClassLike = EngineClassSoftWords.Any(w => lowerClass.Contains(w));   // TForm1 这类弱信号
 
             // 至少两项独立信号才认作游戏本体，避免"随便一个联网的有窗口程序"被误判
             int gameSignals = 0;
@@ -657,12 +839,24 @@ public static class ClientDiscovery
             if (nameLikeGame) gameSignals++;
             if (titleLikeGame) gameSignals++;
             if (parentLauncher) gameSignals++;
+            if (is32Bit) gameSignals++;                       // 32 位客户端（传奇客户端绝大多数如此）
 
-            bool likelyGame = !launcherWord && winUsable && anyGamePort && gameSignals >= 2;
+            // 判据①（旧有，连接基于）：有非 Web 端口连接 + 窗口像游戏
+            bool gameByConnection = !launcherWord && winUsable && anyGamePort && gameSignals >= 2;
 
-            string kind = likelyGame
-                ? "游戏"
-                : (launcherWord || !anyGamePort) ? "疑似登录器" : "未知";
+            // 判据②（新增，窗口优先）：**没有连接也认**。客户端还没登录时也要能被选中并绑上句柄，
+            // 登录之后抓包会自动跟随。只用"与引擎/协议无关的硬结构特征"，避免误绑聊天工具之类：
+            // 加载了渲染库（ddraw/d3d9/opengl32…）/ 窗口类名像引擎渲染窗 / 自绘窗且占屏过半（准全屏）。
+            bool gameByWindow = !launcherWord && winUsable && !noiseClass && !tiny
+                && (hasRender || classLikeGame || (selfDrawn && covers));
+
+            bool likelyGame = gameByConnection || gameByWindow;
+
+            string kind;
+            if (likelyGame) kind = "游戏";
+            else if (launcherWord || (hasAnyConnection && !anyGamePort)) kind = "疑似登录器";
+            else if (windowLooksLikeGame) kind = "疑似游戏窗口";
+            else kind = "未知窗口";
 
             int score = 0;
             if (cfg.TargetPid > 0 && pid == cfg.TargetPid) score += 1000;   // 界面里手动选中的那个，最优先
@@ -681,15 +875,46 @@ public static class ClientDiscovery
             if (selfDrawn && winUsable) score += 25;
             if (covers) score += win.NearlyFullscreen ? 50 : 30;   // 相对屏幕占比，而非固定像素
             if (classLikeGame) score += 30;
+            if (softClassLike) score += 10;                // 弱信号（Delphi/VCL 主窗体类名）
+            if (is32Bit) score += 20;                      // 32 位：不因宿主体位丢失渲染库信号
             if (tiny) score -= 30;                         // 小工具窗/启动器（相对判据）
-            score += anyGamePort ? 40 : -80;               // 只有 Web 连接 → 登录器/更新器特征
+            if (hasAnyConnection) score += anyGamePort ? 40 : -80;   // 只有 Web 连接 → 登录器/更新器特征
+            else score += 20;                              // 连都没连（还没登录）不是减分项
+            if (windowLooksLikeGame) score += 50;           // 窗口优先：结构上就是游戏窗
             if (launcherWord) score -= 90;
             if (parentLauncher) score += 30;               // 由登录器拉起 → 更像游戏本体
 
-            if (score <= 0) continue;
+            if (loopbackOnly && hasAnyConnection) score -= 40;   // 本机/回环候选：降低优先级但仍然列出（单机私服场景）
 
-            // 同一进程可能有多条连接：逐条列出，让"连到哪个服务端"一目了然
-            foreach (var ep in remote)
+            // ---- 保留判定（窗口优先）----
+            //   A. 有连接（任何连接）→ 与旧行为一致，列出；
+            //   B. 无连接但窗口结构像游戏窗 → 列出（**这就是"还没登录也能先连上窗口"的入口**）；
+            //   C. 都不满足 → 只有在手动打开「显示全部窗口」时才列（人工兜底），否则丢弃。
+            bool keep = IncludeAllWindows
+                        || (!noiseClass && ((hasAnyConnection && score > 0) || windowLooksLikeGame));
+
+            if (!keep)
+            {
+                if (noiseClass)
+                {
+                    droppedNoise++;
+                    AddDrop(dropped, $"{name}(pid={pid}) 窗口类 {win.Class} 属系统外壳/浏览器，已排除");
+                }
+                else
+                {
+                    droppedLowScore++;
+                    AddDrop(dropped, $"{name}(pid={pid}) 无连接、窗口也不像游戏窗（评分 {score}）");
+                }
+                continue;
+            }
+
+            // 同一进程可能有多条连接：逐条列出，让"连到哪个服务端"一目了然；
+            // 没有任何连接时（客户端还没登录）也列出一条"窗口侧候选"，ServerIp 留空 → 抓包侧自动跟随。
+            IEnumerable<(string Ip, int Port, int Local)> rows = hasAnyConnection
+                ? connections.Select(ep => (ep.RemoteAddress, ep.RemotePort, ep.LocalPort))
+                : new List<(string Ip, int Port, int Local)> { (string.Empty, 0, 0) };
+
+            foreach (var (ip, port, localPort) in rows)
             {
                 candidates.Add(new ClientCandidate
                 {
@@ -698,9 +923,9 @@ public static class ClientDiscovery
                     HasWindow = hasWindow,
                     Hwnd = hWnd.ToInt64(),
                     WindowTitle = title,
-                    ServerIp = ep.RemoteAddress,
-                    ServerPort = ep.RemotePort,
-                    LocalPort = ep.LocalPort,
+                    ServerIp = ip,
+                    ServerPort = port,
+                    LocalPort = localPort,
                     Score = score,
                     Kind = kind,
                     WindowClass = win.Class,
@@ -715,11 +940,28 @@ public static class ClientDiscovery
             }
         }
 
+        diag.Append($"，涉及进程 {pids.Count} 个（连接侧 {byPid.Count} / 窗口侧 {winByPid.Count}）；" +
+                    $"排除名单丢弃 {droppedBlacklist} 个、无可用连接丢弃 {droppedNoConn} 个、" +
+                    $"非游戏窗丢弃 {droppedLowScore} 个、系统外壳窗丢弃 {droppedNoise} 个、保留本机/回环候选 {keptLoopback} 个");
+        if (dropped.Count > 0) diag.Append("。丢弃明细：" + string.Join("；", dropped.Take(6)));
+        if (candidates.Count == 0)
+            diag.Append("。结论：本机既没有『可见且像游戏窗』的候选，也没有可用的客户端连接（客户端没启动，或被排除名单拦掉）。" +
+                        "勾选上方「显示全部窗口」可强制列出所有可见顶层窗口人工兜底。");
+        LastDiagnostics = diag.ToString();
+
         return candidates
             .OrderByDescending(c => c.Score)
             .ThenBy(c => c.Pid)
             .Take(max)
             .ToList();
+    }
+
+    /// <summary>上一次 Discover 的诊断明细（为什么有/没有候选），诊断用，宿主会原样打进日志。</summary>
+    public static string LastDiagnostics { get; private set; } = string.Empty;
+
+    private static void AddDrop(List<string> list, string item)
+    {
+        if (list.Count < 8) list.Add(item);
     }
 
     /// <summary>给动态过滤用：按进程名找 PID（大小写不敏感，允许带/不带 .exe）。</summary>
@@ -759,10 +1001,25 @@ public static class ClientDiscovery
             .ToList();
     }
 
+    /// <summary>
+    /// 排除名单匹配：**整名前缀**（去掉 .exe 后 equals 或 StartsWith），不再做任意子串匹配。
+    /// 旧实现用 Contains：名单里的短词（如 "qq"）会误杀名字里恰好带这段的进程，
+    /// 而"误杀"的代价可能是候选列表直接变空 —— 用户看到的就是"扫不到客户端"。
+    /// </summary>
     private static bool IsBlacklisted(string processName)
     {
         string n = processName.ToLowerInvariant();
-        return Blacklist.Any(b => n.Contains(b.ToLowerInvariant()));
+        if (n.EndsWith(".exe", StringComparison.Ordinal)) n = n[..^4];
+        return Blacklist.Any(b => n.Equals(b, StringComparison.Ordinal)
+                                  || n.StartsWith(b, StringComparison.Ordinal));
+    }
+
+    /// <summary>窗口类名是否属于系统外壳 / 浏览器 / 常见 UI 框架（不是游戏渲染窗）。</summary>
+    private static bool IsNoiseWindowClass(string windowClass)
+    {
+        if (string.IsNullOrWhiteSpace(windowClass)) return false;
+        string c = windowClass.ToLowerInvariant();
+        return NoiseWindowClasses.Any(w => c.Contains(w));
     }
 
     private static string SafeTitle(Process p)

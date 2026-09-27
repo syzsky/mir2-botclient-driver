@@ -1,5 +1,6 @@
 using System.IO;
 using BotClient.ClientDriver;
+using BotClient.ClientDriver.Hunt;
 using BotClient.ClientDriver.Sniff;
 using BotClient.Human;
 using BotClient.Net;
@@ -250,6 +251,10 @@ public sealed class HostRunner
     /// <summary>停止：先停 AI，再拆驱动/会话（在后台线程调用，界面上只做“发出一条停止指令”）。</summary>
     public async Task StopAsync()
     {
+        // 先撤任务再停宿主：任务循环里的每一次点击都要靠 host/ai 还活着，反过来会把循环卡在半途
+        if (IsHunting) StopHuntTask();
+        else HuntState = "未运行";
+
         try
         {
             Ai?.Stop();
@@ -436,6 +441,8 @@ public sealed class HostRunner
 
             var best = cands.FirstOrDefault();
             if (best != null) Emit($"[扫描] 建议跟随：{best}");
+            // 把"为什么是这些候选"原样打出来（读表失败 / 命中排除名单 / 只有回环连接 / 评分不足）
+            if (!string.IsNullOrEmpty(ClientDiscovery.LastDiagnostics)) Emit(ClientDiscovery.LastDiagnostics);
             if (cands.Count > 0 && gameLike == 0)
                 Emit("[扫描] 注意：没有一行像『游戏本体』（渲染窗特征 + 非 HTTP 端口）——列表里多为登录器/更新器的 " +
                      "HTTP 连接或小工具窗。请把游戏客户端启动并**登录进游戏**后再点「重新扫描」。（判据与分辨率无关，全屏/800×600 都能认出）");
@@ -642,6 +649,136 @@ public sealed class HostRunner
         StatusChanged?.Invoke();
     }
 
+    // ------------------------------------------------------------------ 挂机任务（任务编辑器驱动）
+
+    /// <summary>是否有界面任务正在跑（“执行选中任务/停止任务”按钮据此切换）。</summary>
+    public bool IsHunting { get; private set; }
+
+    /// <summary>任务状态一句话：未运行 / 运行中：xx / 已结束（n 轮，累计击杀 m 只）…</summary>
+    public string HuntState { get; private set; } = "未运行";
+
+    private CancellationTokenSource? _huntCts;
+
+    /// <summary>
+    /// 执行一条在任务编辑器里配好的挂机任务。
+    ///
+    /// 刻意**不另起一套执行逻辑**：编排层仍是 HuntTaskRunner（与命令行 --hunt 同一条链），
+    /// 界面/命令行两边排障时看到的是同一批日志格式与同一套判定，不会出现"界面能跑命令行不能跑"。
+    /// 本方法只负责三件事：查前置（宿主在跑 / 不在仅嗅探）、起一个可取消的后台循环、把每轮结论吐到日志。
+    /// </summary>
+    public bool StartHuntTask(HuntTask task)
+    {
+        if (task == null) return false;
+
+        if (string.IsNullOrWhiteSpace(task.TargetMapText))
+        {
+            Emit("[任务] 未填目标地图名，无法执行（点“编辑”补上）");
+            return false;
+        }
+
+        BotRuntime? runtime = Runtime;
+        ClientDriverHost? host = Host;
+        if (!IsRunning || runtime == null || host == null)
+        {
+            Emit("[任务] 尚未启动：先点“开始挂机”，等角色信息上来后再执行任务");
+            return false;
+        }
+
+        if (IsHunting)
+        {
+            Emit("[任务] 已有任务在跑，先点“停止任务”");
+            return false;
+        }
+
+        if (SniffOnly)
+        {
+            Emit("[任务] 仅嗅探模式不产生任何点击，任务不会执行（取消勾选后再试）");
+            return false;
+        }
+
+        BotCombatAI? ai = Ai;
+        HuntPlan plan = task.ToPlan();
+        var cts = new CancellationTokenSource();
+        _huntCts = cts;
+        IsHunting = true;
+        HuntState = "运行中：" + task.DisplayName;
+
+        Emit($"[任务] 开始执行「{task.DisplayName}」：{plan.Describe()}");
+        if (plan.MinLevel > 0)
+        {
+            int level = runtime.Player.Level;
+            Emit($"[任务] 等级门槛 {plan.MinLevel}，当前角色 {level} 级"
+                 + (level < plan.MinLevel ? "（不满足，本轮不会动手）" : "（满足）"));
+        }
+
+        StatusChanged?.Invoke();
+
+        CancellationToken ct = cts.Token;
+        _ = Task.Run(async () =>
+        {
+            var hunter = new HuntTaskRunner(runtime, host, ai);
+            hunter.Log += m => Emit("[任务] " + m);
+            int round = 0;
+            try
+            {
+                while (!ct.IsCancellationRequested)
+                {
+                    round++;
+                    Emit($"[任务] ===== 第 {round} 轮开始 =====");
+                    HuntReport report = await hunter.RunAsync(plan, ct).ConfigureAwait(false);
+                    Emit($"[任务] 第 {round} 轮结束：{report.Summary}");
+                    foreach (HuntFloorReport floor in report.Floors) Emit("[任务]   " + floor);
+
+                    if (!task.Loop) break;
+
+                    Emit($"[任务] {plan.LoopIntervalMs / 1000}s 后开始下一轮（点“停止任务”结束）");
+                    await Task.Delay(plan.LoopIntervalMs, ct).ConfigureAwait(false);
+                }
+
+                HuntState = $"已结束（{round} 轮，累计击杀 {hunter.TotalKilled} 只）";
+            }
+            catch (OperationCanceledException)
+            {
+                HuntState = $"已停止（{round} 轮，累计击杀 {hunter.TotalKilled} 只）";
+            }
+            catch (Exception ex)
+            {
+                HuntState = "异常结束：" + ex.Message;
+                Emit("[任务] 执行异常: " + ex.Message);
+            }
+            finally
+            {
+                IsHunting = false;
+                _huntCts = null;
+                try { cts.Dispose(); } catch { /* 忽略 */ }
+                Emit($"[任务] {HuntState}");
+                StatusChanged?.Invoke();
+            }
+        });
+
+        return true;
+    }
+
+    /// <summary>停止当前任务：只发取消信号，等循环自己收尾（不硬杀线程，避免点一次卡一次）。</summary>
+    public void StopHuntTask()
+    {
+        if (!IsHunting)
+        {
+            Emit("[任务] 当前没有任务在跑");
+            return;
+        }
+
+        Emit("[任务] 正在停止任务…");
+        try
+        {
+            _huntCts?.Cancel();
+        }
+        catch (Exception ex)
+        {
+            Emit("[任务] 发送停止信号失败: " + ex.Message);
+        }
+    }
+
     /// <summary>状态摘要（左侧“状态/定点”页显示，排障时一眼看清当前配置）。</summary>
     public string BuildStatusText()
     {
@@ -659,6 +796,7 @@ public sealed class HostRunner
         sb.AppendLine("—— 抓包 / 运行 ——");
         sb.AppendLine("   抓包状态      : " + SniffState);
         sb.AppendLine("   运行状态      : " + (IsRunning ? (SniffOnly ? "仅嗅探" : "挂机中") : "未启动"));
+        sb.AppendLine("   挂机任务      : " + HuntState);
         BotRuntime? rt = Runtime;
         if (rt != null)
         {

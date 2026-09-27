@@ -160,6 +160,48 @@
             </ListView.View>
           </ListView>
         </TabItem>
+        <TabItem Header="挂机任务">
+          <Grid Margin="6">
+            <Grid.RowDefinitions>
+              <RowDefinition Height="Auto" />
+              <RowDefinition Height="Auto" />
+              <RowDefinition Height="*" />
+              <RowDefinition Height="Auto" />
+            </Grid.RowDefinitions>
+
+            <WrapPanel Grid.Row="0" Orientation="Horizontal" Margin="0,0,0,6">
+              <Button x:Name="TaskAddBtn" Content="添加" Width="50" Click="OnTaskAddClick" Margin="0,0,4,4" />
+              <Button x:Name="TaskEditBtn" Content="编辑" Width="50" Click="OnTaskEditClick" Margin="0,0,4,4" />
+              <Button x:Name="TaskDelBtn" Content="删除" Width="50" Click="OnTaskDeleteClick" Margin="0,0,4,4" />
+              <Button x:Name="TaskUpBtn" Content="上移" Width="50" Click="OnTaskUpClick" Margin="0,0,4,4" />
+              <Button x:Name="TaskDownBtn" Content="下移" Width="50" Click="OnTaskDownClick" Margin="0,0,4,4" />
+            </WrapPanel>
+
+            <StackPanel Grid.Row="1" Orientation="Horizontal" Margin="0,0,0,6">
+              <Button x:Name="TaskRunBtn" Content="执行选中任务" Style="{StaticResource PrimaryButton}"
+                      Click="OnTaskRunClick" Margin="0,0,6,0" />
+              <Button x:Name="TaskStopBtn" Content="停止任务" Click="OnTaskStopClick" />
+            </StackPanel>
+
+            <ListView x:Name="TaskList" Grid.Row="2" MouseDoubleClick="OnTaskDoubleClick"
+                      SelectionChanged="OnTaskSelectionChanged">
+              <ListView.View>
+                <GridView>
+                  <GridViewColumn Header="任务" Width="70" DisplayMemberBinding="{Binding DisplayName}" />
+                  <GridViewColumn Header="目标图" Width="70" DisplayMemberBinding="{Binding TargetMapText}" />
+                  <GridViewColumn Header="等级" Width="56" DisplayMemberBinding="{Binding LevelText}" />
+                  <GridViewColumn Header="下探" Width="58" DisplayMemberBinding="{Binding DepthText}" />
+                  <GridViewColumn Header="循环" Width="46" DisplayMemberBinding="{Binding LoopText}" />
+                </GridView>
+              </ListView.View>
+            </ListView>
+
+            <TextBlock x:Name="TaskHintText" Grid.Row="3" Foreground="#FF8A8A8A" FontSize="11" TextWrapping="Wrap"
+                       Margin="0,6,0,0"
+                       Text="任务保存在 hunt_tasks.json（与配置同目录）。点“添加”新建任务，双击任务可编辑；执行前请先“开始挂机”，且不要勾“仅嗅探”。" />
+          </Grid>
+        </TabItem>
+
         <TabItem Header="状态/定点">
           <Grid Margin="8">
             <Grid.RowDefinitions>

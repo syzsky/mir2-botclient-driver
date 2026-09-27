@@ -1,0 +1,91 @@
+<Window x:Class="BotClientDriverHostUi.Views.HuntTaskWindow"
+        xmlns="http://schemas.microsoft.com/winfx/2006/xaml/presentation"
+        xmlns:x="http://schemas.microsoft.com/winfx/2006/xaml"
+        Title="挂机任务"
+        Height="520" Width="560" MinHeight="460" MinWidth="520"
+        Background="#FF1E1E1E" Foreground="#FFDDDDDD"
+        FontFamily="Microsoft YaHei UI" FontSize="12"
+        WindowStartupLocation="CenterOwner" ResizeMode="CanResize">
+  <Grid Margin="14">
+    <Grid.RowDefinitions>
+      <RowDefinition Height="*" />
+      <RowDefinition Height="Auto" />
+      <RowDefinition Height="Auto" />
+      <RowDefinition Height="Auto" />
+    </Grid.RowDefinitions>
+
+    <ScrollViewer Grid.Row="0" VerticalScrollBarVisibility="Auto">
+      <Grid>
+        <Grid.ColumnDefinitions>
+          <ColumnDefinition Width="Auto" />
+          <ColumnDefinition Width="*" />
+          <ColumnDefinition Width="14" />
+          <ColumnDefinition Width="Auto" />
+          <ColumnDefinition Width="*" />
+        </Grid.ColumnDefinitions>
+        <Grid.RowDefinitions>
+          <RowDefinition Height="Auto" />
+          <RowDefinition Height="Auto" />
+          <RowDefinition Height="Auto" />
+          <RowDefinition Height="Auto" />
+          <RowDefinition Height="Auto" />
+          <RowDefinition Height="Auto" />
+          <RowDefinition Height="Auto" />
+          <RowDefinition Height="Auto" />
+          <RowDefinition Height="Auto" />
+          <RowDefinition Height="Auto" />
+        </Grid.RowDefinitions>
+
+        <TextBlock Grid.Row="0" Grid.Column="0" Text="任务名" VerticalAlignment="Center" Margin="0,0,8,8" />
+        <TextBox x:Name="NameBox" Grid.Row="0" Grid.Column="1" Grid.ColumnSpan="4" Margin="0,0,0,8"
+                 VerticalContentAlignment="Center" />
+
+        <TextBlock Grid.Row="1" Grid.Column="0" Text="目标地图名" VerticalAlignment="Center" Margin="0,0,8,8" />
+        <TextBox x:Name="MapBox" Grid.Row="1" Grid.Column="1" Grid.ColumnSpan="4" Margin="0,0,0,8"
+                 VerticalContentAlignment="Center" />
+        <TextBlock Grid.Row="2" Grid.Column="1" Grid.ColumnSpan="4" Margin="0,-4,0,8" FontSize="11" Foreground="#FF8A8A8A"
+                   TextWrapping="Wrap" Text="必填。中文名（如 僵尸洞）或地图代码（如 D1101）；换图只改这一格，流程不用动。" />
+
+        <TextBlock Grid.Row="3" Grid.Column="0" Text="传送 NPC 关键词" VerticalAlignment="Center" Margin="0,0,8,8" />
+        <TextBox x:Name="NpcBox" Grid.Row="3" Grid.Column="1" Margin="0,0,0,8" VerticalContentAlignment="Center" />
+        <TextBlock Grid.Row="3" Grid.Column="3" Text="最低等级" VerticalAlignment="Center" Margin="0,0,8,8" />
+        <TextBox x:Name="LevelBox" Grid.Row="3" Grid.Column="4" Margin="0,0,0,8" VerticalContentAlignment="Center" />
+        <TextBlock Grid.Row="4" Grid.Column="1" Grid.ColumnSpan="4" Margin="0,-4,0,8" FontSize="11" Foreground="#FF8A8A8A"
+                   TextWrapping="Wrap" Text="最低等级填 0 = 不检查；低于门槛本轮不做任何点击（避免撞服务端回绝）。" />
+
+        <TextBlock Grid.Row="5" Grid.Column="0" Text="上级菜单路径" VerticalAlignment="Center" Margin="0,0,8,8" />
+        <TextBox x:Name="MenuBox" Grid.Row="5" Grid.Column="1" Grid.ColumnSpan="4" Margin="0,0,0,8"
+                 VerticalContentAlignment="Center" />
+        <TextBlock Grid.Row="6" Grid.Column="1" Grid.ColumnSpan="4" Margin="0,-4,0,8" FontSize="11" Foreground="#FF8A8A8A"
+                   TextWrapping="Wrap" Text="留空 = 点开 NPC 后当前层就是地图名；多级用逗号分隔，如：传送,初级地图。" />
+
+        <CheckBox x:Name="DescendCheck" Grid.Row="7" Grid.Column="0" Grid.ColumnSpan="2" Margin="0,0,0,8"
+                  VerticalAlignment="Center" Content="清完本层继续往下层走" />
+        <TextBlock Grid.Row="7" Grid.Column="3" Text="最多层数" VerticalAlignment="Center" Margin="0,0,8,8" />
+        <TextBox x:Name="DepthBox" Grid.Row="7" Grid.Column="4" Margin="0,0,0,8" VerticalContentAlignment="Center" />
+
+        <TextBlock Grid.Row="8" Grid.Column="0" Text="每层最长(秒)" VerticalAlignment="Center" Margin="0,0,8,8" />
+        <TextBox x:Name="FloorMaxBox" Grid.Row="8" Grid.Column="1" Margin="0,0,0,8" VerticalContentAlignment="Center" />
+        <TextBlock Grid.Row="8" Grid.Column="3" Text="空场判定(秒)" VerticalAlignment="Center" Margin="0,0,8,8" />
+        <TextBox x:Name="ClearIdleBox" Grid.Row="8" Grid.Column="4" Margin="0,0,0,8" VerticalContentAlignment="Center" />
+
+        <TextBlock Grid.Row="9" Grid.Column="0" Text="轮间间隔(秒)" VerticalAlignment="Center" Margin="0,0,8,8" />
+        <TextBox x:Name="LoopIntervalBox" Grid.Row="9" Grid.Column="1" Margin="0,0,0,8" VerticalContentAlignment="Center" />
+        <CheckBox x:Name="LoopCheck" Grid.Row="9" Grid.Column="3" Grid.ColumnSpan="2" Margin="0,0,0,8"
+                  VerticalAlignment="Center" Content="循环执行（不勾=只跑一轮）" />
+      </Grid>
+    </ScrollViewer>
+
+    <StackPanel Grid.Row="1" Orientation="Horizontal" Margin="0,0,0,10">
+      <TextBlock Text="备注" VerticalAlignment="Center" Margin="0,0,8,0" />
+      <TextBox x:Name="NoteBox" Width="440" VerticalContentAlignment="Center" />
+    </StackPanel>
+
+    <TextBlock x:Name="ErrorText" Grid.Row="2" Foreground="#FFFF8A8A" TextWrapping="Wrap" Margin="0,0,0,8" />
+
+    <StackPanel Grid.Row="3" Orientation="Horizontal" HorizontalAlignment="Right">
+      <Button x:Name="OkBtn" Content="保存" Style="{StaticResource PrimaryButton}" Click="OnOkClick" Margin="0,0,8,0" />
+      <Button x:Name="CancelBtn" Content="取消" Click="OnCancelClick" />
+    </StackPanel>
+  </Grid>
+</Window>
