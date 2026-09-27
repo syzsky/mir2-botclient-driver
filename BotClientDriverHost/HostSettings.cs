@@ -1,5 +1,6 @@
 using System.Text.Json;
 using System.Text.Json.Serialization;
+using BotClient;
 using BotClient.Human;
 using BotClient.Session;
 using BotClient.Session.Combat;
@@ -53,11 +54,29 @@ public sealed class HostSettings
 
     // ---- 其它（沿用 AppSettings 名字，便于共用文件）----
     public bool VerbosePacketLog { get; set; }
+
+    /// <summary>旧版本遗留项，当前**没有任何实现**读取它（服务端地址走 ServerIp / 自动跟随）。</summary>
     public string LanHost { get; set; } = "192.168.1.5";
+
+    /// <summary>
+    /// 角色死亡后自动断开重连（服务端会在家点以 14 HP 拉起）。
+    ///
+    /// **当前尚未实现**：<see cref="DeathRecoveryPolicy"/> 的判定规则写得很完整，
+    /// 但没有任何地方构造它、也没有地方发起重连。而且 C 方案（客户端复用模式，即推荐模式）下
+    /// **本程序不持有连接**，无法主动断开重连 —— 要实现只能落在"宿主自己登录"的老路径上。
+    /// 设成 true 目前不会改变任何行为，启动时会打印一条明确警告。
+    /// </summary>
     public bool AutoReloginOnDeath { get; set; }
+
+    /// <summary>见 <see cref="AutoReloginOnDeath"/>：当前未生效。</summary>
     public int AutoReloginMaxAttempts { get; set; } = 3;
+
+    /// <summary>见 <see cref="AutoReloginOnDeath"/>：当前未生效。</summary>
     public int AutoReloginIntervalSec { get; set; } = 60;
+
     public string MapDir { get; set; } = string.Empty;
+
+    /// <summary>未接入的脚本子系统的数据目录，当前**没有任何实现**读取它。</summary>
     public string CharDataDir { get; set; } = string.Empty;
 
     private static readonly JsonSerializerOptions Options = new()
@@ -130,5 +149,32 @@ public sealed class HostSettings
         // 拟真操作：技能循环与拟人档一并灌进 AI（驱动层的鼠标/键盘读的是 ClientDriverConfig）
         ai.SkillPlan = Skills;
         ai.Human = Human ?? new HumanTuning();
+
+        // 逐包报文日志。原来 BotLog.VerbosePackets **从来没有任何赋值点**，
+        // 于是设置里这个开关（以及界面上的复选框）点了完全不生效 ——
+        // 排障时最需要的那份原始字节日志根本不会落盘。
+        BotLog.VerbosePackets = VerbosePacketLog;
+    }
+
+    /// <summary>
+    /// 报告"配置文件里有、但当前没有任何实现"的开关。
+    ///
+    /// 这一批是审查时逐个核对"配置项是否真的被读取"发现的 —— 它们在 HostSettings 之外零引用。
+    /// 与其让用户对着一个没反应的开关反复试，不如启动时一次说清楚。
+    /// </summary>
+    public IEnumerable<string> UnimplementedOptions()
+    {
+        if (AutoReloginOnDeath)
+        {
+            yield return "[settings] AutoReloginOnDeath=true，但**自动重连尚未实现**：本程序不会在角色死亡后"
+                       + "断开重连。死透之后请在游戏客户端里手动重新登录（服务端会在家点以 14 HP 拉起）。"
+                       + $"AutoReloginMaxAttempts={AutoReloginMaxAttempts} / AutoReloginIntervalSec={AutoReloginIntervalSec} 同样未生效";
+        }
+
+        if (!string.IsNullOrWhiteSpace(LanHost))
+            yield return $"[settings] LanHost=\"{LanHost}\" 未被使用（旧版本遗留项；服务端地址走 ServerIp 或自动跟随）";
+
+        if (!string.IsNullOrWhiteSpace(CharDataDir))
+            yield return $"[settings] CharDataDir=\"{CharDataDir}\" 未被使用（角色脚本数据目录属于尚未接入的脚本子系统）";
     }
 }

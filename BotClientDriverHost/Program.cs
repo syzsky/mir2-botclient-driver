@@ -117,6 +117,9 @@ internal static class Program
 
         var settings = HostSettings.Load(settingsPath);
 
+        // 配置文件里有、但当前没有任何实现的开关：直接说清楚，免得用户对着没反应的旋钮反复试
+        foreach (string warn in settings.UnimplementedOptions()) Say(warn);
+
         ClientDriverConfig cfg;
         try
         {

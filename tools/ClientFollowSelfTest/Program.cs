@@ -174,6 +174,33 @@ Section("6. 源码护栏：密码应答 / 掉线提示已接线");
             string dlg = Path.Combine(root, "BotClientDriverHostUi", "Views", "PasswordPromptWindow.xaml");
             Check("密码弹窗的 XAML 存在", File.Exists(dlg), dlg);
         }
+
+        // "配置项被真正读取" —— 这一批是审查时逐个核对 HostSettings 属性引用数发现的：
+        // VerbosePacketLog / LanHost / AutoRelogin* / CharDataDir 在 HostSettings 之外零引用，
+        // 也就是界面上的开关点了没反应。
+        string hsPath = Path.Combine(root, "BotClientDriverHost", "HostSettings.cs");
+        Check("找到 HostSettings.cs", File.Exists(hsPath), hsPath);
+        if (File.Exists(hsPath))
+        {
+            string hs = File.ReadAllText(hsPath);
+            Check("逐包报文日志开关真的被应用（BotLog.VerbosePackets 有赋值点）",
+                hs.Contains("BotLog.VerbosePackets = VerbosePacketLog"));
+            Check("未实现的开关会给出启动警告（UnimplementedOptions）",
+                hs.Contains("UnimplementedOptions"));
+            Check("自动重连在字段注释里明确标注了未实现",
+                hs.Contains("当前尚未实现") && hs.Contains("AutoReloginOnDeath"));
+        }
+
+        if (File.Exists(cliPath))
+        {
+            string cli = File.ReadAllText(cliPath);
+            Check("无界面宿主打印了未实现开关的警告", cli.Contains("UnimplementedOptions()"));
+        }
+        if (File.Exists(uiPath))
+        {
+            string ui = File.ReadAllText(uiPath);
+            Check("图形宿主打印了未实现开关的警告", ui.Contains("UnimplementedOptions()"));
+        }
     }
 }
 

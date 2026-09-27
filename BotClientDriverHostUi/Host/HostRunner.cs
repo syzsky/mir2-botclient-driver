@@ -113,6 +113,10 @@ public sealed class HostRunner
         CancellationToken ct = _cts.Token;
 
         Settings = HostSettings.Load(_settingsPath);
+
+        // 配置文件里有、但当前没有任何实现的开关：直接说清楚，免得用户对着没反应的旋钮反复试
+        foreach (string warn in Settings.UnimplementedOptions()) Emit(warn);
+
         try
         {
             Driver = ClientDriverConfig.Load(_driverPath);
