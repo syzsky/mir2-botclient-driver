@@ -142,7 +142,17 @@ public sealed class ScreenCornerReader
 
         var shot = new Bitmap(w, hh, PixelFormat.Format32bppArgb);
         using (Graphics g = Graphics.FromImage(shot))
+        {
+            // 遮挡检测：CopyFromScreen 拷的是"屏幕上这一块像素"。客户端被别的窗口压住时，
+            // 拷到的是**覆盖窗口的内容**，OCR 很可能读出"别的文字" → 误报「有差异」。
+            // 这个功能的价值恰恰是"只在有依据时报差异"，假警比不报更糟，
+            // 所以遮挡一律按「不可读」处理（与 README 的说明一致）。
+            // 判据：取样框中心点处的最上层窗口，其根窗口必须就是绑定的那个窗口。
+            if (!TopWindowBelongsTo(x + w / 2, y + hh / 2, h))
+                throw new InvalidOperationException("客户端窗口被其它窗口遮挡，屏幕上看不到图例（请把它切到前台再试）");
+
             g.CopyFromScreen(x, y, 0, 0, new Size(w, hh), CopyPixelOperation.SourceCopy);
+        }
 
         int sc = scale < 1 ? 1 : (scale > 4 ? 4 : scale);
         if (sc == 1) return shot;
@@ -244,4 +254,20 @@ public sealed class ScreenCornerReader
 
     [DllImport("user32.dll")]
     private static extern bool ClientToScreen(IntPtr hWnd, ref POINT lpPoint);
+
+    private const uint GA_ROOT = 2;
+
+    [DllImport("user32.dll")]
+    private static extern IntPtr WindowFromPoint(POINT point);
+
+    [DllImport("user32.dll")]
+    private static extern IntPtr GetAncestor(IntPtr hWnd, uint gaFlags);
+
+    /// <summary>屏幕点 (sx,sy) 处最上层的窗口是否与 <paramref name="target"/> 属于同一个顶层窗口。</summary>
+    private static bool TopWindowBelongsTo(int sx, int sy, IntPtr target)
+    {
+        IntPtr top = WindowFromPoint(new POINT { X = sx, Y = sy });
+        if (top == IntPtr.Zero) return false;
+        return GetAncestor(top, GA_ROOT) == GetAncestor(target, GA_ROOT);
+    }
 }

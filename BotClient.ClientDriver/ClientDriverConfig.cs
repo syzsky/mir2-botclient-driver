@@ -131,14 +131,34 @@ public sealed class ClientDriverConfig
 
     public static ClientDriverConfig Load(string path)
     {
-        if (!File.Exists(path))
+        try
         {
-            var fresh = new ClientDriverConfig();
-            fresh.Save(path);
-            return fresh;
+            if (!File.Exists(path))
+            {
+                var fresh = new ClientDriverConfig();
+                fresh.Save(path);
+                return fresh;
+            }
+            var json = File.ReadAllText(path);
+            return JsonSerializer.Deserialize<ClientDriverConfig>(json, JsonOpts) ?? new ClientDriverConfig();
         }
-        var json = File.ReadAllText(path);
-        return JsonSerializer.Deserialize<ClientDriverConfig>(json, JsonOpts) ?? new ClientDriverConfig();
+        catch (Exception)
+        {
+            // 配置损坏（手工编辑漏了逗号 / 文件被截断 / 编码不对）时退回默认值，
+            // 而不是让 JsonException 一路抛出去、宿主连启动都做不到 ——
+            // 一份坏配置不该比"用默认值跑起来"更糟。
+            // 损坏的原文件改名保留，用户能自己比对，不至于被静默覆盖掉。
+            try
+            {
+                if (File.Exists(path))
+                    File.Move(path, path + ".bad", overwrite: true);
+            }
+            catch
+            {
+                // 连改名都失败（文件被占用）：忽略，仍然用默认值继续
+            }
+            return new ClientDriverConfig();
+        }
     }
 
     public void Save(string path) =>
@@ -262,6 +282,18 @@ public sealed class BehaviorTuning
     /// <summary>两次点击之间的最小间隔。真客户端自己受 !Setup.txt 限制，这里只是别让它点太快显得机械。</summary>
     public int MinClickIntervalMs { get; set; } = 180;
     public int MaxClickIntervalMs { get; set; } = 420;
+
+    /// <summary>
+    /// **走路**点击之间的最小间隔（毫秒）。
+    ///
+    /// 这一条和上面的 MinClickIntervalMs 不是一回事：服务端的走路人头闸门会**静默丢弃**
+    /// 快于阈值的 CM_WALK（本机实测 490ms，见 BotCombatAI 的注释）。驱动层的移动控制器
+    /// （MapWalkController，挂机任务/NPC 靠近都走它）原本只受 MinClickIntervalMs 约束，
+    /// 也就是最快 180ms 一步 —— 连点会被服务端整包丢掉，而本地坐标已经"乐观前移"，
+    /// 表现为越走越对不上、追不到怪。所以这里必须单独设一个 >= 490 的下限。
+    /// 0 表示不额外限速（退回旧行为，仅供对照排查）。
+    /// </summary>
+    public int WalkMinIntervalMs { get; set; } = 520;
 
     /// <summary>鼠标按下到抬起的持续时长。</summary>
     public int ClickHoldMinMs { get; set; } = 60;

@@ -268,14 +268,22 @@ public sealed class HostRunner
         ai.Log += m => Emit("[ai] " + m);
         Ai = ai;
 
-        if (!SniffOnly)
+        bool sniffing = SniffState == "抓包中";
+        if (SniffOnly)
+        {
+            Emit("[ui] 仅嗅探模式：只做状态镜像，不产生任何点击");
+        }
+        else if (sniffing)
         {
             ai.Start();
             Emit("[ui] AI 已启动（坐标/地图由客户端真实封包提供）");
         }
         else
         {
-            Emit("[ui] 仅嗅探模式：只做状态镜像，不产生任何点击");
+            // 抓包没起来就不要启动 AI：否则状态栏会同时显示「环境未就绪」和「挂机中」，
+            // 排障时自相矛盾。AI 在未连接时确实只会空转、不会误点，
+            // 但"看起来在挂机"会让人把注意力引到错误的方向。
+            Emit("[ui] 抓包未就绪，AI 暂不启动；修好抓包后点“抓包检测”重试即可，无需重启本程序。");
         }
 
         IsRunning = true;
@@ -642,11 +650,11 @@ public sealed class HostRunner
     /// 纯只读：不动配置、不碰网络。引擎无关 —— 只要是持有外部 TCP 连接的客户端进程都会进候选，
     /// 包含黑名单过滤（浏览器/聊天工具等）与评分排序。
     /// </summary>
-    public List<ClientCandidate> ScanClients(int max = 12)
+    public List<ClientCandidate> ScanClients(int max = 12, bool includeAllWindows = false)
     {
         try
         {
-            List<ClientCandidate> cands = ClientDiscovery.Discover(Driver, max);
+            List<ClientCandidate> cands = ClientDiscovery.Discover(Driver, max, includeAllWindows);
             int gameLike = cands.Count(c => c.LikelyGame);
             Emit($"[扫描] 候选客户端 {cands.Count} 条（判为游戏本体 {gameLike} 条）" +
                  (Driver.TargetHwnd != 0

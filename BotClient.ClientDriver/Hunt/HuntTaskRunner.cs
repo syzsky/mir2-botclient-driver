@@ -83,8 +83,17 @@ public sealed class HuntTaskRunner
         }
 
         // ---- 等级门槛：不够级就不点。拿真角色去撞服务端回绝既浪费一次换图，也可能被踢 ----
+        // 等级未知（还没收到属性包）时按"不满足"处理而不是放行：
+        // --hunt-level 的语义是"低于门槛一次点击都不做"，把未知当通过
+        // 等于可能把一个低级角色直接送进高级图。等属性包到达后下一轮会自己继续。
         int level = _runtime.Player.Level;
-        if (plan.MinLevel > 0 && level > 0 && level < plan.MinLevel)
+        if (plan.MinLevel > 0 && level <= 0)
+        {
+            report.Summary = $"角色等级未知（尚未收到属性包），无法确认是否达到 {plan.TargetMapText} 的门槛 {plan.MinLevel} 级，本轮不执行";
+            Emit(report.Summary);
+            return report;
+        }
+        if (plan.MinLevel > 0 && level < plan.MinLevel)
         {
             report.Summary = $"当前 {level} 级，低于 {plan.TargetMapText} 的门槛 {plan.MinLevel} 级，本轮不执行";
             Emit(report.Summary);
@@ -415,10 +424,19 @@ public sealed class HuntTaskRunner
         return false;
     }
 
-    /// <summary>在当前菜单里挑"下层入口"。命中多个取最靠前的（菜单顺序通常由浅到深）。</summary>
+    /// <summary>
+    /// 在当前菜单里挑"下层入口"。
+    ///
+    /// 命中多于一条时**拒点并把候选打出来**，而不是取最靠前的那个 ——
+    /// 菜单里同时有"地下仓库"和"地下二层"时，"取第一个"就是一次真实的、你并不想去的传送。
+    /// 这里与 ClientActionDriver.SelectDialogAsync / MapEntryProbe.FindOptionIndex 的口径保持一致
+    /// （那两处都要求唯一命中）。菜单顺序并不保证由浅到深，所以也不能靠"取第一个"来兜底。
+    /// </summary>
     private string PickDescendOption(HuntPlan plan)
     {
         var lines = _host.Ui.DialogLines;
+        var hits = new List<string>();
+
         for (int i = 0; i < lines.Count; i++)
         {
             string line = lines[i]?.Trim() ?? string.Empty;
@@ -427,9 +445,18 @@ public sealed class HuntTaskRunner
             foreach (string kw in plan.DescendKeywords)
             {
                 if (string.IsNullOrWhiteSpace(kw)) continue;
-                if (line.Contains(kw, StringComparison.OrdinalIgnoreCase)) return line;
+                if (!line.Contains(kw, StringComparison.OrdinalIgnoreCase)) continue;
+                if (!hits.Contains(line)) hits.Add(line);
+                break;
             }
         }
+
+        if (hits.Count == 1) return hits[0];
+
+        if (hits.Count > 1)
+            Emit($"[任务] 菜单里有 {hits.Count} 个疑似下层入口（{string.Join(" | ", hits)}），"
+               + "不确定该点哪个，放弃下探；可收紧 --hunt-npc，或用 --hunt-menu 精确到上一级菜单");
+
         return string.Empty;
     }
 

@@ -31,7 +31,14 @@ public readonly record struct NpcapProbeResult(
     string? InstallerPath = null)
 {
     /// <summary>是否可以立即开始抓包。</summary>
-    public bool Ok => Status == NpcapProbeStatus.Ready;
+    /// <summary>
+    /// 环境是否可用。
+    ///
+    /// 必须把 <see cref="NpcapProbeStatus.InstalledNow"/> 也算作可用：本进程刚把 Npcap 补装完时
+    /// 返回的就是它（注释明确写了"装完本进程可直接继续"）。漏掉它会让调用方在
+    /// "刚刚装好"这一刻判定为"未安装"，弹出安装向导或直接报错。
+    /// </summary>
+    public bool Ok => Status is NpcapProbeStatus.Ready or NpcapProbeStatus.InstalledNow;
 }
 
 /// <summary>

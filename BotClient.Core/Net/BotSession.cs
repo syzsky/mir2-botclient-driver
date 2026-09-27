@@ -14,7 +14,51 @@ public sealed class BotSession : IAsyncDisposable
     // 主动断开标记:DisconnectAsync 里 DisposeAsync 会先把收包泵结束掉,
     // 那一刻 _connection 还没置 null,不加分辨就会在每次切阶段/小退/大退时误报"被踢"。
     private bool _closing;
-    private readonly Channel<MirServerPacket> _pending = Channel.CreateUnbounded<MirServerPacket>(new UnboundedChannelOptions { SingleReader = false });
+
+    // ---- 待处理服务端包 ----
+    // 原来这里是无界 Channel + SingleReader=false。但"多个并发消费者 + 按谓词过滤"
+    // 这个组合用 Channel 表达不了：过滤不中的包要么被丢掉（丢包），要么写回队列
+    // （同一个消费者下一轮立刻又读到它，变成 100% CPU 空转）。
+    // 改成"锁保护的列表 + 到达信号"后，谓词不匹配的包原样留在队列里 ——
+    // 既不丢也不空转，顺序也保持不变。
+    private readonly List<MirServerPacket> _pending = new();
+    private readonly object _pendingLock = new();
+    private TaskCompletionSource<bool> _pendingSignal = new(TaskCreationOptions.RunContinuationsAsynchronously);
+    private bool _pendingClosed;
+
+    /// <summary>入队并唤醒所有等待者。</summary>
+    private void Enqueue(MirServerPacket pkt)
+    {
+        TaskCompletionSource<bool> wake;
+        lock (_pendingLock)
+        {
+            _pending.Add(pkt);
+            wake = _pendingSignal;
+            _pendingSignal = new TaskCompletionSource<bool>(TaskCreationOptions.RunContinuationsAsynchronously);
+        }
+        wake.TrySetResult(true);
+    }
+
+    /// <summary>取"队列发生变化"的信号。调用方必须已持有 _pendingLock（扫描与取信号必须在同一把锁里，
+    /// 否则会漏掉扫描和等待之间到达的包）。</summary>
+    private Task TakeSignalLocked()
+    {
+        if (_pendingSignal.Task.IsCompleted)
+            _pendingSignal = new TaskCompletionSource<bool>(TaskCreationOptions.RunContinuationsAsynchronously);
+        return _pendingSignal.Task;
+    }
+
+    private void ClosePending()
+    {
+        TaskCompletionSource<bool> wake;
+        lock (_pendingLock)
+        {
+            _pendingClosed = true;
+            wake = _pendingSignal;
+            _pendingSignal = new TaskCompletionSource<bool>(TaskCreationOptions.RunContinuationsAsynchronously);
+        }
+        wake.TrySetResult(true);
+    }
 
     // ================= C 方案（客户端驱动）挂接点 · 见 Net/ClientDriven.cs =================
     // 两个属性都为 null 时，本类行为与改造前完全一致（直连模式）。
@@ -135,7 +179,7 @@ public sealed class BotSession : IAsyncDisposable
                     }
                 }
 
-                await _pending.Writer.WriteAsync(pkt, ct).ConfigureAwait(false);
+                Enqueue(pkt);
             }
         }
         catch (OperationCanceledException) { }
@@ -203,11 +247,8 @@ public sealed class BotSession : IAsyncDisposable
                 break;
         }
 
-        // 信道满时丢帧而不是阻塞抓包线程（无界信道实际不会满，留作兜底）
-        if (_pending.Writer.TryWrite(pkt))
-            Interlocked.Increment(ref _injectedPackets);
-        else
-            Interlocked.Increment(ref _injectedDropped);
+        Enqueue(pkt);
+        Interlocked.Increment(ref _injectedPackets);
     }
 
     public async Task<MirServerPacket> WaitForPacketAsync(Func<MirServerPacket, bool> predicate, TimeSpan timeout, CancellationToken ct)
@@ -216,58 +257,86 @@ public sealed class BotSession : IAsyncDisposable
         using var linked = CancellationTokenSource.CreateLinkedTokenSource(timeoutCts.Token, ct);
         var token = linked.Token;
 
-        // 先扫已有队列:不匹配的包放回队列尾部,避免静默丢弃
-        var skipped = new List<MirServerPacket>();
-        while (_pending.Reader.TryRead(out var existing))
+        while (true)
         {
-            if (predicate(existing))
+            token.ThrowIfCancellationRequested();
+
+            // MirServerPacket 是 readonly record struct，用 bool 标记而不是可空值类型
+            bool hasHit = false;
+            MirServerPacket hit = default;
+            bool closed = false;
+            Task signal;
+
+            lock (_pendingLock)
             {
-                foreach (var s in skipped) await _pending.Writer.WriteAsync(s, token).ConfigureAwait(false);
-                return existing;
+                // 注意不能直接写 _pending.FindIndex(predicate)：FindIndex 收的是 Predicate<T>，
+                // 和 Func<T,bool> 是两个互不兼容的委托类型，必须用 lambda 包一层。
+                int idx = _pending.FindIndex(p => predicate(p));
+                if (idx >= 0)
+                {
+                    hit = _pending[idx];
+                    _pending.RemoveAt(idx);
+                    hasHit = true;
+                    signal = Task.CompletedTask;
+                }
+                else if (_pendingClosed)
+                {
+                    closed = true;
+                    signal = Task.CompletedTask;
+                }
+                else
+                {
+                    signal = TakeSignalLocked();
+                }
             }
-            skipped.Add(existing);
-        }
-        foreach (var s in skipped) await _pending.Writer.WriteAsync(s, token).ConfigureAwait(false);
 
-        // 再等新包
-        await foreach (var pkt in _pending.Reader.ReadAllAsync(token).ConfigureAwait(false))
-        {
-            if (predicate(pkt)) return pkt;
-        }
+            if (hasHit) return hit;
+            if (closed) throw new InvalidOperationException("Disconnected while waiting for server response.");
 
-        throw new InvalidOperationException("Disconnected while waiting for server response.");
+            // 谓词不匹配的包**原样留在队列里**：BotRuntime 的收包循环是并发的另一个消费者，
+            // 它要处理每一个下行包（公告/系统消息/地图描述…）。原实现在"等新包"阶段
+            // 把这些包直接消费掉，等于"等 A 的响应时把路上遇到的 B 全吃了"。
+            await signal.WaitAsync(token).ConfigureAwait(false);
+        }
     }
 
     /// <summary>等待匹配的包但不消费它——包留在队列里给后续的 BotRuntime 处理。
     /// 用于登录流程末尾:确认 RunGate 回了首包(公告/LOGON 等),但首包本身要留给 BotRuntime。
-    /// 仅用 peek 判断是否有匹配包,不改变队列内容。</summary>
+    /// 仅用 peek 判断是否有匹配包,不改变队列内容。
+    /// 实现上完全不搬动队列，因此不会出现"读出→写回→立刻又读出同一个包"的同步空转
+    /// （原实现在队列里只有一个不匹配包时会让该线程 100% 占核，直到 10 秒超时）。</summary>
     public async Task<bool> PeekPacketAsync(Func<MirServerPacket, bool> predicate, TimeSpan timeout, CancellationToken ct)
     {
         using var timeoutCts = new CancellationTokenSource(timeout);
         using var linked = CancellationTokenSource.CreateLinkedTokenSource(timeoutCts.Token, ct);
         var token = linked.Token;
 
-        // peek 已有队列:读到不匹配的包放回尾部,匹配的也放回尾部,都不消费
-        var peeked = new List<MirServerPacket>();
-        while (_pending.Reader.TryRead(out var existing))
+        while (true)
         {
-            peeked.Add(existing);
-            if (predicate(existing))
+            token.ThrowIfCancellationRequested();
+
+            bool closed = false;
+            Task signal;
+
+            lock (_pendingLock)
             {
-                foreach (var s in peeked) await _pending.Writer.WriteAsync(s, token).ConfigureAwait(false);
-                return true;
+                if (_pending.Any(predicate))
+                    return true;
+                if (_pendingClosed)
+                {
+                    closed = true;
+                    signal = Task.CompletedTask;
+                }
+                else
+                {
+                    signal = TakeSignalLocked();
+                }
             }
-        }
-        foreach (var s in peeked) await _pending.Writer.WriteAsync(s, token).ConfigureAwait(false);
 
-        // 等新包:匹配就放回并返回 true,不匹配的也放回
-        await foreach (var pkt in _pending.Reader.ReadAllAsync(token).ConfigureAwait(false))
-        {
-            await _pending.Writer.WriteAsync(pkt, token).ConfigureAwait(false);
-            if (predicate(pkt)) return true;
-        }
+            if (closed) return false;
 
-        return false;
+            await signal.WaitAsync(token).ConfigureAwait(false);
+        }
     }
 
     public void SetStage(MirSessionStage stage) => Stage = stage;
@@ -277,13 +346,43 @@ public sealed class BotSession : IAsyncDisposable
     public void SetRunGate(string host, int port) { RunGateHost = host; RunGatePort = port; }
 
     /// <summary>枚举所有新到的包(BotRuntime 用)。每包只派一次。
-    /// 带外层 while 循环——即使 Writer 被意外完成也能继续等待新连接写入。</summary>
+    /// 带外层 while 循环——即使被 ClosePending 关闭也能继续等待新连接写入。</summary>
     public async IAsyncEnumerable<MirServerPacket> ReadAllPacketsAsync([System.Runtime.CompilerServices.EnumeratorCancellation] CancellationToken ct)
     {
         while (!ct.IsCancellationRequested)
         {
-            await foreach (var pkt in _pending.Reader.ReadAllAsync(ct).ConfigureAwait(false))
-                yield return pkt;
+            List<MirServerPacket>? batch = null;
+            Task? signal = null;
+            bool closed = false;
+
+            lock (_pendingLock)
+            {
+                if (_pending.Count > 0)
+                {
+                    // 一次性取走当前积压（保持到达顺序）；yield 必须在锁外做
+                    batch = new List<MirServerPacket>(_pending);
+                    _pending.Clear();
+                }
+                else if (_pendingClosed)
+                {
+                    closed = true;
+                }
+                else
+                {
+                    signal = TakeSignalLocked();
+                }
+            }
+
+            if (batch != null)
+            {
+                foreach (var pkt in batch)
+                    yield return pkt;
+                continue;
+            }
+
+            if (closed) yield break;
+
+            await signal!.WaitAsync(ct).ConfigureAwait(false);
         }
     }
 
@@ -307,6 +406,6 @@ public sealed class BotSession : IAsyncDisposable
     public async ValueTask DisposeAsync()
     {
         await DisconnectAsync().ConfigureAwait(false);
-        _pending.Writer.TryComplete();
+        ClosePending();
     }
 }

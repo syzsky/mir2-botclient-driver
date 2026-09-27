@@ -984,6 +984,16 @@ internal sealed class Cli
                 return args[++i];
             }
 
+            // 数值参数统一走这里：int.Parse 抛出的 FormatException 只会变成
+            // "输入的字符串格式不正确"，不说是哪个参数、也不说给了什么值 ——
+            // 多参数命令行里只能一个个试。这里把两者都带上。
+            int NextInt()
+            {
+                string raw = Next();
+                if (int.TryParse(raw, out int v)) return v;
+                throw new ArgumentException($"{arg} 需要整数，实际给了 \"{raw}\"");
+            }
+
             switch (arg)
             {
                 case "-h":
@@ -1012,7 +1022,7 @@ internal sealed class Cli
                     cli.FightPointX = int.Parse(Next());
                     break;
                 case "--fight-y":
-                    cli.FightPointY = int.Parse(Next());
+                    cli.FightPointY = NextInt();
                     break;
                 case "--hunt":
                     cli.HuntMap = Next();
@@ -1027,10 +1037,10 @@ internal sealed class Cli
                     cli.HuntLevel = int.Parse(Next());
                     break;
                 case "--hunt-depth":
-                    cli.HuntDepth = int.Parse(Next());
+                    cli.HuntDepth = NextInt();
                     break;
                 case "--hunt-clear":
-                    cli.HuntClearSeconds = int.Parse(Next());
+                    cli.HuntClearSeconds = NextInt();
                     break;
                 case "--hunt-no-descend":
                     cli.HuntNoDescend = true;

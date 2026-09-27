@@ -63,6 +63,27 @@ public sealed class MapWalkController
 
     public event Action<string>? Log;
 
+    /// <summary>上一次真的把走路点击发出去的时刻（见 <see cref="WaitWalkPacingAsync"/>）。</summary>
+    private DateTime _lastWalkClickUtc = DateTime.MinValue;
+
+    /// <summary>
+    /// 走路点击之间的最小间隔。
+    ///
+    /// 为什么必须有：服务端的走路人头闸门会**静默丢弃**快于阈值的 CM_WALK（本机 490ms），
+    /// 而本控制器是挂机任务/NPC 靠近的唯一移动通道 —— 它原本只经过 ActionGate 的
+    /// MinClickIntervalMs（默认 180ms），远低于 490ms。连点会让服务端整包丢掉 CM_WALK，
+    /// 但本地坐标已经"乐观前移"，表现就是越走越对不上、追不到怪。
+    /// Core 侧的 BotCombatAI 有自己的 650ms 节拍，这条路径之前完全绕过了它。
+    /// </summary>
+    private async Task WaitWalkPacingAsync(CancellationToken ct)
+    {
+        int floor = _cfg.Behavior.WalkMinIntervalMs;
+        if (floor <= 0) return;                      // 显式关掉，仅供对照排查
+        double since = (DateTime.UtcNow - _lastWalkClickUtc).TotalMilliseconds;
+        if (since < floor)
+            await Task.Delay((int)(floor - since), ct).ConfigureAwait(false);
+    }
+
     /// <summary>走到目标格。</summary>
     public async Task<WalkResult> WalkToAsync(int targetX, int targetY, CancellationToken ct)
     {
@@ -119,6 +140,7 @@ public sealed class MapWalkController
             bool longHaul = distance > _cfg.Behavior.MiniMapPathMinDistance;
             if (longHaul && _mapper.MiniMapReady)
             {
+                await WaitWalkPacingAsync(ct).ConfigureAwait(false);
                 var outcome = await _gate.ExecuteAsync($"小地图寻路→({targetX},{targetY})", async c =>
                 {
                     var pt = _mapper.WorldToMiniMapPixel(targetX, targetY, px, py);
@@ -126,7 +148,7 @@ public sealed class MapWalkController
 
                     if (!_input.ClickClient(pt.Value.X, pt.Value.Y))
                         return false;
-
+                    _lastWalkClickUtc = DateTime.UtcNow;   // 只记"真的点出去了"的时刻
                     return await WaitForProgressAsync(px, py, ct).ConfigureAwait(false);
                 }, ct).ConfigureAwait(false);
 
@@ -159,9 +181,11 @@ public sealed class MapWalkController
                     return WalkResult.Blocked;
                 }
 
+                await WaitWalkPacingAsync(ct).ConfigureAwait(false);
                 var outcome = await _gate.ExecuteAsync($"走→({stepX},{stepY})", async c =>
                 {
                     if (!_input.ClickClient(pt.X, pt.Y)) return false;
+                    _lastWalkClickUtc = DateTime.UtcNow;
                     return await WaitForProgressAsync(px, py, ct).ConfigureAwait(false);
                 }, ct).ConfigureAwait(false);
 

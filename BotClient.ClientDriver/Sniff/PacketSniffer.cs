@@ -25,6 +25,15 @@ public sealed class SniffFlow
 
     public TcpReassembler Downstream { get; } = new();
     public TcpReassembler Upstream { get; } = new();
+
+    /// <summary>最后一次在该流上看到数据包的时间（回收闲置流用）。</summary>
+    public DateTime LastSeenUtc { get; set; } = DateTime.UtcNow;
+
+    /// <summary>两个方向都已收到 FIN/RST。</summary>
+    public bool Closed => Downstream.Closed && Upstream.Closed;
+
+    /// <summary>两个方向识别到的新连接次数之和（诊断用）。</summary>
+    public int Reconnects => Downstream.Reconnects + Upstream.Reconnects;
 }
 
 /// <summary>
@@ -48,15 +57,65 @@ public sealed class PacketSniffer : IDisposable
     /// <summary>服务端 IP：配置为空时进入"自动跟随"模式，由客户端真实连接反查得到。</summary>
     private IPAddress? _serverIp;
 
+    /// <summary>
+    /// 零配置模式下推断出的 LoginGate 端口（**不写回用户配置**，仅本次运行内有效）。
+    ///
+    /// 为什么需要它：三个网关端口都没配时 GuessGate 会把所有未知端口一律判成 RunGate，
+    /// 而 LoginCredentialProbe.Feed 对 RunGate 直接 return —— 于是 README 4.1 承诺的
+    /// "零配置模式下从客户端自己发出的登录包里还原账号密码"在自动跟随下是死代码。
+    /// 传奇的链路顺序固定是 LoginGate → SelGate → RunGate，客户端启动后建立的第一条
+    /// 到服务端的连接必然是 LoginGate，所以拿它当登录端口是安全的。
+    /// </summary>
+    private volatile int _autoLoginGatePort;
+
     // ---- 自动跟随（ServerIp 未配置时启用）----
     private readonly HashSet<int> _clientLocalPorts = new();
     private readonly HashSet<int> _notClientPorts = new();   // 已确认不是客户端端口的本地端口（避免重复查表）
     private readonly List<int> _clientPids = new();
+    private readonly object _pidsLock = new();               // _clientPids 的专用锁：抓包线程与定时器线程都会碰
     private Timer? _endpointTimer;
-    private bool _portFilterActive;
+    private volatile bool _portFilterActive;
     private bool _autoFollow;
     private int _discoverTick;
     private string _lastConfigured = string.Empty;
+
+    /// <summary>闲置多久的流可以被回收（分钟）。</summary>
+    private const int StaleFlowMinutes = 10;
+
+    // ---- _clientPids 的并发安全访问 ----
+    // 为什么必须走这几个方法：RefreshEndpoints 跑在 Timer 线程上（每秒一次，会 Clear/AddRange），
+    // 而 AcceptAutoFollow 跑在抓包回调线程上会枚举它。List<T> 不是线程安全的，
+    // 并发 Clear 期间枚举轻则漏判、重则抛异常 —— 而异常会被 AcceptAutoFollow 的 catch 吞掉，
+    // 表现是"这个包不是客户端的"被静默丢弃（登录包就这么丢的）。所以统一走快照。
+    private int[] PidsSnapshot()
+    {
+        lock (_pidsLock) return _clientPids.ToArray();
+    }
+
+    private void SetPids(IEnumerable<int> pids)
+    {
+        var list = pids as List<int> ?? pids.ToList();
+        lock (_pidsLock)
+        {
+            _clientPids.Clear();
+            _clientPids.AddRange(list);
+        }
+    }
+
+    private bool HasNoPids()
+    {
+        lock (_pidsLock) return _clientPids.Count == 0;
+    }
+
+    private bool AnyPidDead()
+    {
+        lock (_pidsLock) return _clientPids.Count > 0 && !_clientPids.Any(IsProcessAlive);
+    }
+
+    private string PidsTag()
+    {
+        lock (_pidsLock) return string.Join(",", _clientPids);
+    }
 
     // ---- 诊断采样（只读；只影响日志，不改变任何抓包/解析行为）----
     private sealed class FlowStat { public long InPkts, InBytes, OutPkts, OutBytes; }
@@ -138,7 +197,7 @@ public sealed class PacketSniffer : IDisposable
         }
 
         _device.StartCapture();
-        _statsTimer = new Timer(_ => DumpStats(), null, 5000, 5000);
+        _statsTimer = new Timer(_ => { DumpStats(); EvictStaleFlows(); }, null, 5000, 5000);
         Emit("[sniff] 已开始只读抓包（不介入连接，客户端无感）；每 5 秒输出一次包统计与首包十六进制，用于定位「抓不到 / 解不出」");
     }
 
@@ -159,22 +218,23 @@ public sealed class PacketSniffer : IDisposable
             if (!string.Equals(configured, _lastConfigured, StringComparison.OrdinalIgnoreCase))
             {
                 _lastConfigured = configured;
-                _clientPids.Clear();
+                SetPids(Array.Empty<int>());
                 lock (_clientLocalPorts) { _clientLocalPorts.Clear(); _notClientPorts.Clear(); }
                 if (configured.Length > 0) Emit($"[sniff] 进程配置变更为 \"{configured}\"，重新识别并跟随新进程");
             }
 
-            if (_clientPids.Count == 0 || !_clientPids.Any(IsProcessAlive))
+            if (HasNoPids() || AnyPidDead())
             {
-                _clientPids.Clear();
-                _clientPids.AddRange(ClientDiscovery.FindPidsByProcessName(_cfg.ProcessName));
+                // 枚举进程要读窗口标题、可能较慢，放在锁外做完再整体替换，
+                // 避免把抓包线程堵在 _pidsLock 上。
+                SetPids(ClientDiscovery.FindPidsByProcessName(_cfg.ProcessName ?? string.Empty));
             }
 
-            string pidTag = configured + ":" + string.Join(",", _clientPids);
-            if (_clientPids.Count > 0 && pidTag != _pidsLogged)
+            string pidTag = configured + ":" + PidsTag();
+            if (!HasNoPids() && pidTag != _pidsLogged)
             {
                 _pidsLogged = pidTag;
-                Emit($"[sniff] 当前只监听进程 \"{configured}\"（pid={string.Join(",", _clientPids)}）的连接");
+                Emit($"[sniff] 当前只监听进程 \"{configured}\"（pid={PidsTag()}）的连接");
             }
 
             // 一直没有下行数据时，每 ~5 秒重新列一次候选：
@@ -183,7 +243,7 @@ public sealed class PacketSniffer : IDisposable
 
             // 还没有 PID 时每 2 秒重试一次识别 —— 允许"先启动宿主、后启动客户端"的顺序，
             // 也允许进程名不是配置里那个默认值（此时靠自动发现挑最像客户端的进程）。
-            if (_clientPids.Count == 0 && ++_discoverTick % 2 == 1)
+            if (HasNoPids() && ++_discoverTick % 2 == 1)
             {
                 var cands = ClientDiscovery.Discover(_cfg, 3);
                 if (cands.Count > 0)
@@ -192,13 +252,12 @@ public sealed class PacketSniffer : IDisposable
                     Emit($"[sniff] 自动识别到客户端进程 {best.ProcessName} (pid={best.Pid})" +
                          (best.HasWindow ? $" 窗口=\"{best.WindowTitle}\"" : string.Empty));
                     _cfg.ProcessName = best.ProcessName;
-                    _clientPids.Clear();
-                    _clientPids.AddRange(ClientDiscovery.FindPidsByProcessName(best.ProcessName));
+                    SetPids(ClientDiscovery.FindPidsByProcessName(best.ProcessName));
                     TryLockServerEndpoint(best.ServerIp, best.ServerPort);
                 }
             }
 
-            var eps = ClientDiscovery.EstablishedOfPids(_clientPids);
+            var eps = ClientDiscovery.EstablishedOfPids(PidsSnapshot());
             if (eps.Count == 0) return;
 
             var ports = new HashSet<int>();
@@ -253,7 +312,7 @@ public sealed class PacketSniffer : IDisposable
         int clientPort = 0;
         try
         {
-            foreach (var ep in ClientDiscovery.EstablishedOfPids(_clientPids))
+            foreach (var ep in ClientDiscovery.EstablishedOfPids(PidsSnapshot()))
             {
                 if (ep.LocalPort == tcp.SourcePort && ep.RemotePort == tcp.DestinationPort)
                 {
@@ -304,6 +363,13 @@ public sealed class PacketSniffer : IDisposable
         {
             // 只作为"最可能是哪个网关"的提示，不写死：实际判定仍走 GuessGate
             Emit($"[sniff] 提示：该连接端口 = {port}");
+        }
+
+        // 三个网关端口都没配（零配置模式）：把首条连接视作 LoginGate，见 _autoLoginGatePort 的说明。
+        if (_cfg.LoginGatePort == 0 && _cfg.SelGatePort == 0 && _cfg.RunGatePort == 0 && port != 0)
+        {
+            _autoLoginGatePort = port;
+            Emit($"[sniff] 零配置模式：把首个连接端口 {port} 视作 LoginGate（用于还原登录凭据）");
         }
 
         ServerEndpointLocked?.Invoke(ip, port);
@@ -523,9 +589,13 @@ public sealed class PacketSniffer : IDisposable
         }
     }
 
+    /// <summary>_flows 字典的 key：客户端端点 → 服务端端点。与诊断用的 FlowKeyOf 格式不同，别混用。</summary>
+    private static string FlowDictKey(IPEndPoint client, IPEndPoint server)
+        => $"{client.Address}:{client.Port}-{server.Address}:{server.Port}";
+
     private SniffFlow? GetOrCreateFlow(IPEndPoint server, IPEndPoint client)
     {
-        string key = $"{client.Address}:{client.Port}-{server.Address}:{server.Port}";
+        string key = FlowDictKey(client, server);
         lock (_gateLock)
         {
             if (_flows.TryGetValue(key, out var exist)) return exist;
@@ -540,10 +610,60 @@ public sealed class PacketSniffer : IDisposable
         }
     }
 
+    /// <summary>
+    /// 回收已关闭或长期闲置的流。
+    ///
+    /// 为什么必须做：客户端每次重连都会换一个本地端口 ⇒ 新的四元组 key，
+    /// 而 <c>_flows</c> / <c>_flowStats</c> / <c>_hexDumped</c> 原本只增不减。
+    /// 挂机按天算、掉线重连又频繁，不回收就是稳定增长的内存与遍历开销
+    /// （每条 SniffFlow 还持有两个重组器和它们的订阅）。
+    /// 判定用"双向都收到 FIN/RST"或"超过 StaleFlowMinutes 没再看到包"。
+    /// </summary>
+    private void EvictStaleFlows()
+    {
+        if (_disposed) return;
+        try
+        {
+            var now = DateTime.UtcNow;
+            List<SniffFlow> dead = new();
+            int remaining;
+
+            lock (_gateLock)
+            {
+                foreach (var kv in _flows)
+                {
+                    bool idle = (now - kv.Value.LastSeenUtc).TotalMinutes >= StaleFlowMinutes;
+                    if (kv.Value.Closed || idle) dead.Add(kv.Value);
+                }
+
+                foreach (var f in dead)
+                {
+                    _flows.Remove(FlowDictKey(f.Client, f.Server));
+                    string diagKey = FlowKeyOf(f);
+                    _flowStats.Remove(diagKey);
+                    _hexDumped.Remove($"{diagKey} 下行");
+                    _hexDumped.Remove($"{diagKey} 上行");
+                }
+                remaining = _flows.Count;
+            }
+
+            if (dead.Count > 0)
+                Emit($"[sniff] 已回收 {dead.Count} 条已结束/闲置的连接（当前跟踪 {remaining} 条）");
+        }
+        catch (Exception ex)
+        {
+            Emit($"[sniff] 回收闲置连接异常: {ex.Message}");
+        }
+    }
+
     /// <summary>按端口判定网关；未配置或未命中时先按 RunGate 处理（进入游戏后绝大多数流量都是它）。</summary>
     private MirGateMode GuessGate(int serverPort)
     {
         if (_cfg.LoginGatePort != 0 && serverPort == _cfg.LoginGatePort) return MirGateMode.LoginGate;
+        // 零配置模式下推断出的登录端口（见 _autoLoginGatePort）：不认它的话，
+        // LoginCredentialProbe.Feed 会因为"判成 RunGate"直接 return，
+        // README 4.1 承诺的"自动从客户端登录包里还原账号密码"就是死代码。
+        if (_autoLoginGatePort != 0 && serverPort == _autoLoginGatePort) return MirGateMode.LoginGate;
         if (_cfg.SelGatePort != 0 && serverPort == _cfg.SelGatePort) return MirGateMode.SelGate;
         if (_cfg.RunGatePort != 0 && serverPort == _cfg.RunGatePort) return MirGateMode.RunGate;
         return MirGateMode.RunGate;

@@ -265,10 +265,27 @@ public sealed class InputSimulator
         }
     }
 
+    /// <summary>
+    /// 把屏幕绝对坐标换算成 SendInput 需要的 0..65535 归一化坐标。
+    ///
+    /// 这里必须用**虚拟桌面**的尺寸与原点：dwFlags 里带了 MOUSEEVENTF_VIRTUALDESK，
+    /// 语义就是"坐标相对于整个虚拟桌面"，而虚拟桌面原点在多显示器下常常不是 (0,0)
+    /// （主屏右侧/下方挂屏时 SM_X/YVIRTUALSCREEN 为负）。
+    /// 原来用主屏的 SM_CXSCREEN/SM_CYSCREEN 且不减原点偏移：单显示器恰好等价，
+    /// 但主屏不在虚拟桌面左上角时，所有点击都会整体偏移、甚至落到另一块屏上。
+    /// </summary>
     private static void MoveAbsolute(int screenX, int screenY)
     {
-        int vw = GetSystemMetrics(SM_CXSCREEN);
-        int vh = GetSystemMetrics(SM_CYSCREEN);
+        int vx = GetSystemMetrics(SM_XVIRTUALSCREEN);
+        int vy = GetSystemMetrics(SM_YVIRTUALSCREEN);
+        int vw = GetSystemMetrics(SM_CXVIRTUALSCREEN);
+        int vh = GetSystemMetrics(SM_CYVIRTUALSCREEN);
+        if (vw <= 0) vw = Math.Max(1, GetSystemMetrics(SM_CXSCREEN));   // 极端兜底：拿不到虚拟桌面就退回主屏
+        if (vh <= 0) vh = Math.Max(1, GetSystemMetrics(SM_CYSCREEN));
+
+        int nx = screenX - vx;
+        int ny = screenY - vy;
+
         var input = new INPUT
         {
             type = INPUT_MOUSE,
@@ -276,8 +293,8 @@ public sealed class InputSimulator
             {
                 mi = new MOUSEINPUT
                 {
-                    dx = (int)((long)screenX * 65535 / Math.Max(1, vw - 1)),
-                    dy = (int)((long)screenY * 65535 / Math.Max(1, vh - 1)),
+                    dx = (int)((long)nx * 65535 / Math.Max(1, vw - 1)),
+                    dy = (int)((long)ny * 65535 / Math.Max(1, vh - 1)),
                     mouseData = 0,
                     dwFlags = MOUSEEVENTF_MOVE | MOUSEEVENTF_ABSOLUTE | MOUSEEVENTF_VIRTUALDESK,
                     time = 0,
@@ -351,6 +368,10 @@ public sealed class InputSimulator
     private const uint KEYEVENTF_KEYUP = 0x0002;
     private const int SM_CXSCREEN = 0;
     private const int SM_CYSCREEN = 1;
+    private const int SM_XVIRTUALSCREEN = 76;      // 虚拟桌面原点 X（多显示器时可能为负）
+    private const int SM_YVIRTUALSCREEN = 77;
+    private const int SM_CXVIRTUALSCREEN = 78;     // 虚拟桌面总宽
+    private const int SM_CYVIRTUALSCREEN = 79;
     private const int SW_RESTORE = 9;
 
     [StructLayout(LayoutKind.Sequential)]

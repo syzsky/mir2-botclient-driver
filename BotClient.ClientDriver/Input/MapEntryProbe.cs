@@ -326,8 +326,11 @@ public sealed class MapEntryProbe
 
         bool clicked = await _driver.TrySelectDialogAsync(index, null, ct).ConfigureAwait(false);
         if (!clicked)
-            return new MapEntryOutcome(MapEntryStatus.NotFound, menuText, expectCode, before, NameOf(before),
-                                       "点击未发出（对话态不满足 / 未校准 / 多候选）");
+            // 归到 Aborted 而不是 NotFound：这里"没点出去"是**环境/时序**问题
+            // （对话态不满足 / 未校准 / 闸门熔断 / 多候选），不是"这个选项不存在"。
+            // NotFound 会被写进负缓存并锁 30 分钟，见 SaveOutcome 的说明。
+            return new MapEntryOutcome(MapEntryStatus.Aborted, menuText, expectCode, before, NameOf(before),
+                                       "点击未发出（对话态不满足 / 未校准 / 闸门熔断 / 多候选）");
 
         var deadline = DateTime.UtcNow.AddMilliseconds(ObserveMs);
         while (DateTime.UtcNow < deadline)
@@ -429,6 +432,12 @@ public sealed class MapEntryProbe
     private void SaveOutcome(int npcX, int npcY, MapEntryOutcome o)
     {
         if (string.IsNullOrWhiteSpace(o.MenuText)) return;
+
+        // Aborted = 前置步骤失败（没能和 NPC 说上话 / 点击压根没发出），属于**瞬时故障**：
+        // 闸门熔断、窗口失焦、没校准、NPC 没点上都会走到这里。
+        // 这类结局不能写进"回绝缓存"—— 否则一次偶发失败会被 TryGetRejected 拦住整整
+        // RejectedCacheMinutes 分钟，排查时看起来像"这个选项永远进不去"。
+        if (o.Status == MapEntryStatus.Aborted) return;
 
         string key = KeyFor(npcX, npcY);
         if (!_cache.TryGetValue(key, out var npc))

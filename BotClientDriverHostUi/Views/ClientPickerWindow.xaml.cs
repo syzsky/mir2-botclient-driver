@@ -32,9 +32,9 @@ public partial class ClientPickerWindow : Window
     /// <summary>用户最终选中的候选（未选为 null）。</summary>
     public ClientCandidate? Selected { get; private set; }
 
-    private void Rescan()
+    private void Rescan(bool? includeAllWindows = null)
     {
-        _all = _runner.ScanClients();
+        _all = _runner.ScanClients(includeAllWindows: includeAllWindows ?? AllWindowsChk.IsChecked == true);
         ApplyFilter();
     }
 
@@ -81,8 +81,9 @@ public partial class ClientPickerWindow : Window
     private void OnAllWindowsChanged(object sender, RoutedEventArgs e)
     {
         if (!IsLoaded) return;
-        ClientDiscovery.IncludeAllWindows = AllWindowsChk.IsChecked == true;
-        Rescan();
+        // 只作用于本次扫描（见 ClientDiscovery.Discover 的说明）：
+        // 以前这里写的是静态开关，勾一次就永久生效，会污染自动跟随路径。
+        Rescan(AllWindowsChk.IsChecked == true);
     }
 
     private void SetButtons()

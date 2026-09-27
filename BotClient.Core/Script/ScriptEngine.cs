@@ -100,7 +100,8 @@ public sealed class ScriptEngine
     /// 脚本一句 等待 都不写时,这是唯一的刹车:真机上有一条脚本在 doorlink 查不到门点时
     /// 以每秒上千轮空转,每轮两三行日志,把日志和 UI 的调度队列一起堆爆。
     /// 离线自检(ScriptCheck)的时钟只被 等待 推进、流水账要能逐行复现,所以那里保持默认 0。</summary>
-    public int MinPassMs { get; set; }
+    /// <summary>过了一轮之后补上的最小间隔（毫秒）。0 = 不刹车（仅离线自检用）。</summary>
+    public int MinPassMs { get; set; } = 50;
 
     /// <summary>刚过了一轮的分界,下一圈主循环该补刹车。时间是假时钟上也取得到的时刻;
     /// 单独一个 bool 是因为 0 在离线自检的假时钟上是合法时刻。</summary>

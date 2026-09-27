@@ -127,7 +127,19 @@ public sealed class HuntTaskStore
             if (string.IsNullOrWhiteSpace(json)) return new List<HuntTask>();
 
             List<HuntTask>? list = JsonSerializer.Deserialize<List<HuntTask>>(json, Options);
-            return list ?? new List<HuntTask>();
+            if (list is null) return new List<HuntTask>();
+
+            // 手工编辑过 hunt_tasks.json 时，"MenuPath": null 会把非空初始化覆盖成 null，
+            // 之后 MenuText / ToPlan() / Clone() 全部抛 NullReferenceException
+            // （UI 线程上表现为"点按钮弹错误框"）。这里统一归一化一次。
+            foreach (var t in list)
+            {
+                t.MenuPath ??= new List<string>();
+                t.Name ??= string.Empty;
+                t.TargetMapText ??= string.Empty;
+                t.NpcKeyword ??= string.Empty;
+            }
+            return list;
         }
         catch (Exception ex)
         {

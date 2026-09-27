@@ -232,6 +232,15 @@ public sealed class BotRuntime
                     lock (_itemListLock) HandlePacket(pkt);
                     if (pktCount <= 3 || pktCount % 50 == 0)
                         EmitLog($"[runtime] 已处理 {pktCount} 个包, ident={pkt.Header.Ident}");
+
+                    // 周期性兜底清理。换图时 HandleNewMap 会清一次，但"不换图一直打同一张图"
+                    // 恰恰是最常见的挂机形态 —— 那时 Dots / ObjectHpMap / DotNameCache 只增不减：
+                    // 内存单调增长，而且视野外的残留对象会被 FindNearestMonster 当成"最近目标"去追。
+                    if (pktCount % PruneEveryPackets == 0)
+                    {
+                        PruneOutOfRangeDots();
+                        TrimCaches();
+                    }
                 }
                 catch (Exception ex)
                 {
@@ -3310,6 +3319,56 @@ public sealed class BotRuntime
         }
         if (changed)
             StateChanged?.Invoke();
+    }
+
+    /// <summary>每处理多少个包做一次兜底清理（见 ReceiveLoopAsync 的调用点）。</summary>
+    private const int PruneEveryPackets = 200;
+
+    /// <summary>DotNameCache 的容量上限。</summary>
+    private const int DotNameCacheLimit = 2000;
+
+    /// <summary>ObjectHpMap 的容量上限。</summary>
+    private const int ObjectHpMapLimit = 2000;
+
+    /// <summary>
+    /// 给两个"只增不减"的缓存封顶。
+    ///
+    /// DotNameCache 是刻意的只增不减（换图后仍复用已知名字，见 HandleName 的注释），
+    /// ObjectHpMap 也只在换图时清 —— 两者在"长时间打同一张图"的挂机场景下都会无限累积。
+    /// 裁剪策略是丢掉"已不在 Dots 里"的条目：再出现时服务端会重发名字/血量包，功能无损。
+    /// </summary>
+    private void TrimCaches()
+    {
+        try
+        {
+            if (DotNameCache.Count > DotNameCacheLimit)
+            {
+                int removed = 0;
+                foreach (var id in DotNameCache.Keys)
+                {
+                    if (DotNameCache.Count <= DotNameCacheLimit) break;
+                    if (!Dots.ContainsKey(id) && DotNameCache.TryRemove(id, out _)) removed++;
+                }
+                if (removed > 0)
+                    BotLog.Info($"[runtime] DotNameCache 超上限({DotNameCacheLimit})，清理 {removed} 条视野外名字缓存");
+            }
+
+            if (ObjectHpMap.Count > ObjectHpMapLimit)
+            {
+                int removed = 0;
+                foreach (var id in ObjectHpMap.Keys)
+                {
+                    if (ObjectHpMap.Count <= ObjectHpMapLimit) break;
+                    if (!Dots.ContainsKey(id) && ObjectHpMap.TryRemove(id, out _)) removed++;
+                }
+                if (removed > 0)
+                    BotLog.Info($"[runtime] ObjectHpMap 超上限({ObjectHpMapLimit})，清理 {removed} 条视野外血量记录");
+            }
+        }
+        catch (Exception ex)
+        {
+            BotLog.Warn($"[runtime] 缓存裁剪异常: {ex.Message}");
+        }
     }
 }
 

@@ -1,0 +1,22 @@
+# 构建产物
+bin/
+obj/
+publish/
+publish-ui/
+
+# 运行期生成的配置与缓存（各自机器不同，不入库）
+# 注意：*.sample.json 是模板，必须保留
+clientdriver.json
+botsettings.json
+hunt_tasks.json
+calibration.json
+*.bad
+
+# 编辑器 / 系统
+.vs/
+.vscode/
+.idea/
+*.user
+*.suo
+Thumbs.db
+Desktop.ini

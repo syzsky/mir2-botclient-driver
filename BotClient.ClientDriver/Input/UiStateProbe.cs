@@ -50,14 +50,24 @@ public sealed class UiStateProbe
 
     public UiState State { get; private set; } = UiState.Unknown;
 
-    /// <summary>当前对话框里的菜单文本（如果能从包里解出来的话），用于按文本匹配选项。</summary>
-    public List<string> DialogLines { get; } = new();
+    /// <summary>
+    /// 当前对话框里的菜单文本（如果能从包里解出来的话），用于按文本匹配选项。
+    ///
+    /// 线程约定：这两个列表采用**整体换引用**（copy-on-write）而不是就地增删。
+    /// 原因：读方（<c>MapEntryProbe</c> / <c>ClientActionDriver</c> / <c>HuntTaskRunner</c>）
+    /// 不持锁直接索引它们，而 <see cref="Tick"/> 跑在宿主 Timer 线程上会清空内容。
+    /// 就地 Clear/AddRange 会让读方拿到"清到一半"的列表并抛 ArgumentOutOfRangeException ——
+    /// 那个异常在 try 之外，会一路穿出宿主主循环、把整个挂机进程带走。
+    /// 换引用后读方要么看到旧快照、要么看到新快照，不会撕裂（引用赋值本身是原子的）。
+    /// </summary>
+    public List<string> DialogLines { get; private set; } = new();
 
     /// <summary>
     /// 当前对话框菜单项的结构化形式（显示文本 → 回传命令），与 <see cref="DialogLines"/> 同序等长。
     /// 由 <see cref="FeedNpcDialog"/> 从 Core 的 NPC 正文里解出；行号就是这里的下标。
+    /// 同样遵循"整体换引用"约定。
     /// </summary>
-    public List<NpcOption> DialogOptions { get; } = new();
+    public List<NpcOption> DialogOptions { get; private set; } = new();
 
     /// <summary>下发当前对话框的 NPC 标识（SM_MERCHANTSAY 的 Recog），0 表示未知。</summary>
     public long DialogOwner { get; private set; }
@@ -89,7 +99,8 @@ public sealed class UiStateProbe
             {
                 Transition(UiState.MapLoading, "收到换图包");
                 _mapLoadDeadline = DateTime.UtcNow.AddMilliseconds(MapLoadGuardMs);
-                DialogLines.Clear();
+                DialogLines = new List<string>();
+                DialogOptions = new List<NpcOption>();
                 return;
             }
 
@@ -169,7 +180,8 @@ public sealed class UiStateProbe
             if (State == UiState.NpcDialog && now >= _dialogDeadline)
             {
                 Transition(UiState.Free, "对话窗口静默超时（应已关闭）");
-                DialogLines.Clear();
+                DialogLines = new List<string>();
+                DialogOptions = new List<NpcOption>();
             }
         }
     }
@@ -182,9 +194,8 @@ public sealed class UiStateProbe
     {
         lock (_lock)
         {
-            DialogLines.Clear();
-            DialogOptions.Clear();
-            DialogLines.AddRange(lines.Where(s => !string.IsNullOrWhiteSpace(s)));
+            DialogLines = new List<string>(lines.Where(s => !string.IsNullOrWhiteSpace(s)));
+            DialogOptions = new List<NpcOption>();
         }
     }
 
@@ -213,10 +224,8 @@ public sealed class UiStateProbe
             }
 
             DialogOwner = merchantId;
-            DialogOptions.Clear();
-            DialogOptions.AddRange(options);
-            DialogLines.Clear();
-            DialogLines.AddRange(options.Select(o => o.Display));
+            DialogOptions = new List<NpcOption>(options);
+            DialogLines = new List<string>(options.Select(o => o.Display));
 
             if (State != UiState.NpcDialog)
                 Transition(UiState.NpcDialog, $"收到 NPC({merchantId}) 菜单 {options.Count} 项");

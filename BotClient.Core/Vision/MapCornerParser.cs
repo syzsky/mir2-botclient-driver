@@ -90,8 +90,14 @@ public static class MapCornerParser
         @"(?:坐标|位置|方位)\s*[:：]?\s*(\d{1,4})\s*[,，:：、/]\s*(\d{1,4})",
         RegexOptions.Compiled);
 
+    // 兜底版式：多数客户端图例不带括号，形如 "比奇省 330,330"。
+    //
+    // 必须**锚定在文本末尾**：图例的坐标永远在行尾，而"两位数字+逗号+两位数字"这个形状
+    // 在任何文本里都很常见（"在线 12,34 人"、"第 3 页 12,34"）。不锚定的话 Parse 会给出
+    // HasPos=true 的**错误坐标**，进而在 Compare 里报出假的"坐标不符"——
+    // 而这个功能的价值恰恰是"只在有依据时报差异"，假警比不报更糟。
     private static readonly Regex PosBare = new(
-        @"(?<!\d)(\d{2,4})\s*[,，、]\s*(\d{2,4})(?!\d)",
+        @"(?<!\d)(\d{2,4})\s*[,，、]\s*(\d{2,4})\s*[)）】\]}]?\s*$",
         RegexOptions.Compiled);
 
     /// <summary>把 OCR 文本解析成读数。解析不出任何有效内容时返回 <see cref="CornerReading.Unreadable"/>。</summary>

@@ -621,7 +621,15 @@ public static class ClientDiscovery
     /// 宽松模式：把"可见顶层窗口但不满足游戏结构判据"的条目也一并列出，供人工兜底手选。
     /// 由客户端选择器上的「显示全部窗口」勾选框打开。默认关闭，避免列表被无关窗口淹没。
     /// </summary>
-    public static bool IncludeAllWindows { get; set; }
+    /// <summary>
+    /// 是否把"本机所有可见顶层窗口"也纳入候选（兜底）。
+    ///
+    /// 注意这里**故意做成 Discover 的参数而不是静态开关**：静态开关一旦被图形界面的
+    /// 「显示全部窗口（兜底）」勾过一次就永久生效，而自动跟随路径（HostRunner 的等待态重试、
+    /// PacketSniffer 的自动识别）只看"候选数是否 &gt; 0"。两者叠加会让自动跟随把任意顶层窗口
+    /// （浏览器等）当成客户端绑定，并打日志说"客户端已出现，自动跟上"。
+    /// </summary>
+    private const bool DefaultIncludeAllWindows = false;
 
     /// <summary>HTTP/HTTPS 及常见 Web 端口：登录器/更新器走这里；游戏本体一般走自有 TCP 网关端口。</summary>
     private static readonly int[] HttpPorts =
@@ -635,7 +643,7 @@ public static class ClientDiscovery
     /// 反查当前正在运行的客户端候选，按评分从高到低返回。
     /// <paramref name="cfg"/> 里若已填 ProcessName，则该进程获得压倒性加分。
     /// </summary>
-    public static List<ClientCandidate> Discover(ClientDriverConfig cfg, int max = 8)
+    public static List<ClientCandidate> Discover(ClientDriverConfig cfg, int max = 8, bool includeAllWindows = DefaultIncludeAllWindows)
     {
         var endpoints = TcpTableReader.Snapshot();
         var diag = new StringBuilder();
@@ -890,7 +898,7 @@ public static class ClientDiscovery
             //   A. 有连接（任何连接）→ 与旧行为一致，列出；
             //   B. 无连接但窗口结构像游戏窗 → 列出（**这就是"还没登录也能先连上窗口"的入口**）；
             //   C. 都不满足 → 只有在手动打开「显示全部窗口」时才列（人工兜底），否则丢弃。
-            bool keep = IncludeAllWindows
+            bool keep = includeAllWindows
                         || (!noiseClass && ((hasAnyConnection && score > 0) || windowLooksLikeGame));
 
             if (!keep)
