@@ -239,6 +239,12 @@ public sealed class ClientDriverHost : IAsyncDisposable
     // ---------------------------------------------------------------- 零配置自动识别
 
     /// <summary>
+    /// 最近一次 <see cref="AutoConfigure"/> 是否真的改动了 <see cref="Config"/>。
+    /// 与它的返回值是两件事：返回值管"识别到没有"，本属性管"配置变了没有"。
+    /// </summary>
+    public bool LastConfigureChanged { get; private set; }
+
+    /// <summary>
     /// 自动识别"用户在玩哪个客户端、它连的是哪个服务端"，并把结果写回 <see cref="Config"/>。
     ///
     /// 触发时机：客户端**已经启动并登录进游戏**之后（哪怕刚连上登录服也够）。
@@ -252,8 +258,10 @@ public sealed class ClientDriverHost : IAsyncDisposable
         var cands = ClientDiscovery.Discover(Config, 5);
         if (cands.Count == 0)
         {
-            Log?.Invoke("[host] 自动识别失败：没找到像游戏客户端的进程连接。" +
-                        "请确认客户端已启动、并已点过登录（此时才有到服务端的 TCP 连接）。");
+            LastConfigureChanged = false;
+            Log?.Invoke("[host] 自动识别失败：没找到候选客户端。" +
+                        "请确认客户端已启动（未登录时也能靠窗口侧候选认出），" +
+                        "必要时用界面「扫描客户端」人工指定目标。");
             return false;
         }
 
@@ -287,7 +295,8 @@ public sealed class ClientDriverHost : IAsyncDisposable
                         string.Join("；", others));
         }
 
-        return changed;
+        LastConfigureChanged = changed;
+        return true;   // 语义 = "识别到候选客户端"，与"配置是否变化"无关
     }
 
     /// <summary>只打印候选，不改配置 —— 排查"为什么识别不到/识别错"时用。</summary>

@@ -100,6 +100,12 @@
         </Border>
         <Border Style="{StaticResource ChipBorder}">
           <StackPanel Orientation="Horizontal">
+            <TextBlock Text="客户端" Foreground="#FF8A8A8A" />
+            <TextBlock x:Name="ChipClient" Text="未绑定" Margin="5,0,0,0" Foreground="#FFFFD98A" />
+          </StackPanel>
+        </Border>
+        <Border Style="{StaticResource ChipBorder}">
+          <StackPanel Orientation="Horizontal">
             <TextBlock Text="校准" Foreground="#FF8A8A8A" />
             <TextBlock x:Name="ChipCal" Text="—" Margin="5,0,0,0" Foreground="#FFE8E8E8" />
           </StackPanel>

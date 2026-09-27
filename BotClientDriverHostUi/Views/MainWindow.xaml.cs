@@ -188,6 +188,11 @@ public partial class MainWindow : Window
         ChipSniff.Text = _runner.SniffState;
         ChipUi.Text = host?.Ui?.State.ToString() ?? "—";
         ChipCal.Text = _runner.Driver.View.IsCalibrated ? "已校准" : "未校准";
+        ChipClient.Text = _runner.ClientChipText;
+
+        // 「等待客户端连接」状态下周期性只读重试跟随：客户端一登录就自动接上，
+        // 这样识别客户端不再依赖“已经点过开始挂机”，顺序不会再死锁。
+        if (_runner.AwaitClientFollow) Task.Run(() => _runner.RetryFollowClient());
 
         if (_tick % 2 == 0) RefreshLists();
         if (_tick % 2 == 0) RefreshTaskButtons();
